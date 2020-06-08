@@ -96,7 +96,7 @@ class ShardingContainerPoolBalancerTests
     IndexedSeq.fill(count)(new NestedSemaphore[FullyQualifiedEntityName](max))
 
   def lbConfig(blackboxFraction: Double, managedFraction: Option[Double] = None) =
-    ShardingContainerPoolBalancerConfig(
+    LoadBalancerConfig(
       managedFraction.getOrElse(1.0 - blackboxFraction),
       blackboxFraction,
       1,

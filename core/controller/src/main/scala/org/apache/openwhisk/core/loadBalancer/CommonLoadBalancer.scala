@@ -52,8 +52,8 @@ abstract class CommonLoadBalancer(config: WhiskConfig,
 
   protected implicit val executionContext: ExecutionContext = actorSystem.dispatcher
 
-  val lbConfig: ShardingContainerPoolBalancerConfig =
-    loadConfigOrThrow[ShardingContainerPoolBalancerConfig](ConfigKeys.loadbalancer)
+  val lbConfig: LoadBalancerConfig =
+    loadConfigOrThrow[LoadBalancerConfig](ConfigKeys.loadbalancer)
   protected val invokerPool: ActorRef
 
   /** State related to invocations and throttling */
@@ -345,3 +345,16 @@ abstract class CommonLoadBalancer(config: WhiskConfig,
     }
   }
 }
+
+/**
+ * Configuration for the load balancer.
+ *
+ * @param managedFraction
+ * @param blackboxFraction the fraction of all invokers to use exclusively for blackboxes
+ * @param timeoutFactor factor to influence the timeout period for forced active acks (time-limit.std * timeoutFactor + timeoutAddon)
+ * @param timeoutAddon extra time to influence the timeout period for forced active acks (time-limit.std * timeoutFactor + timeoutAddon)
+ */
+case class LoadBalancerConfig(managedFraction: Double,
+                              blackboxFraction: Double,
+                              timeoutFactor: Int,
+                              timeoutAddon: FiniteDuration)
