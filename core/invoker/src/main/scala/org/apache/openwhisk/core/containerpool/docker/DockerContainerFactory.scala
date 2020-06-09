@@ -26,9 +26,7 @@ import org.apache.openwhisk.common.Logging
 import org.apache.openwhisk.common.TransactionId
 import org.apache.openwhisk.core.WhiskConfig
 import org.apache.openwhisk.core.containerpool._
-import org.apache.openwhisk.core.entity.ByteSize
-import org.apache.openwhisk.core.entity.ExecManifest
-import org.apache.openwhisk.core.entity.InvokerInstanceId
+import org.apache.openwhisk.core.entity.{ByteSize, CpuTime, ExecManifest, ExecutableWhiskAction, InvokerInstanceId}
 
 import scala.concurrent.duration._
 import java.util.concurrent.TimeoutException
@@ -71,7 +69,7 @@ class DockerContainerFactory(instance: InvokerInstanceId,
       image = image,
       registryConfig = Some(registryConfig),
       memory = memory,
-      cpuShares = cpuShares,
+      cpu = Left(cpuShares),
       environment = Map("__OW_API_HOST" -> config.wskApiHost) ++ containerArgsConfig.extraEnvVarMap,
       network = containerArgsConfig.network,
       dnsServers = containerArgsConfig.dnsServers,
@@ -133,6 +131,33 @@ class DockerContainerFactory(instance: InvokerInstanceId,
           Future.sequence(removals)
       }
     Await.ready(cleaning, 30.seconds)
+  }
+
+  override def createContainerWithFixedSize(tid: TransactionId,
+                                            name: String,
+                                            actionImage: ExecManifest.ImageName,
+                                            isUserProvidedImage: Boolean,
+                                            memory: ByteSize,
+                                            cpu: CpuTime,
+                                            action: Option[ExecutableWhiskAction])(
+    implicit config: WhiskConfig, logging: Logging): Future[Container] = {
+    val registryConfig =
+      ContainerFactory.resolveRegistryConfig(isUserProvidedImage, runtimesRegistryConfig, userImagesRegistryConfig)
+    val image = if (isUserProvidedImage) Left(actionImage) else Right(actionImage)
+    DockerContainer.create(
+      tid,
+      image = image,
+      registryConfig = Some(registryConfig),
+      memory = memory,
+      cpu = Right(cpu),
+      environment = Map("__OW_API_HOST" -> config.wskApiHost) ++ containerArgsConfig.extraEnvVarMap,
+      network = containerArgsConfig.network,
+      dnsServers = containerArgsConfig.dnsServers,
+      dnsSearch = containerArgsConfig.dnsSearch,
+      dnsOptions = containerArgsConfig.dnsOptions,
+      name = Some(name),
+      useRunc = dockerContainerFactoryConfig.useRunc,
+      parameters ++ containerArgsConfig.extraArgs.map { case (k, v) => ("--" + k, v) })
   }
 }
 

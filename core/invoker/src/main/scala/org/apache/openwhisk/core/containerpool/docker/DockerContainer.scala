@@ -20,17 +20,19 @@ package org.apache.openwhisk.core.containerpool.docker
 import java.time.Instant
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicLong
+
 import akka.actor.ActorSystem
 import akka.stream._
 import akka.stream.scaladsl.Framing.FramingException
 import spray.json._
+
 import scala.concurrent.{ExecutionContext, Future}
 import scala.concurrent.duration._
 import org.apache.openwhisk.common.Logging
 import org.apache.openwhisk.common.TransactionId
 import org.apache.openwhisk.core.containerpool._
 import org.apache.openwhisk.core.entity.ActivationResponse.{ConnectionError, MemoryExhausted}
-import org.apache.openwhisk.core.entity.{ActivationEntityLimit, ByteSize}
+import org.apache.openwhisk.core.entity.{ActivationEntityLimit, ByteSize, CpuTime}
 import org.apache.openwhisk.core.entity.size._
 import akka.stream.scaladsl.{Framing, Source}
 import akka.stream.stage._
@@ -50,7 +52,7 @@ object DockerContainer {
    * @param transid transaction creating the container
    * @param image either a user provided (Left) or OpenWhisk provided (Right) image
    * @param memory memorylimit of the container
-   * @param cpuShares sharefactor for the container
+   * @param cpu either an Int value for specifying cpu shares or a CpuTime object for fixed cpu time resource
    * @param environment environment variables to set on the container
    * @param network network to launch the container in
    * @param dnsServers list of dns servers to use in the container
@@ -62,7 +64,7 @@ object DockerContainer {
              image: Either[ImageName, ImageName],
              registryConfig: Option[RuntimesRegistryConfig] = None,
              memory: ByteSize = 256.MB,
-             cpuShares: Int = 0,
+             cpu: Either[Int, CpuTime] = Left(0),
              environment: Map[String, String] = Map.empty,
              network: String = "bridge",
              dnsServers: Seq[String] = Seq.empty,
@@ -85,17 +87,32 @@ object DockerContainer {
       case (key, valueList) => valueList.toList.flatMap(Seq(key, _))
     }
 
+    val cfsOptions: Seq[String]  = cpu match{
+      case Left(_) => Seq.empty
+      case Right(cpuTime) =>
+        val (quota, period) = cpuTime.toCfsQuotaAndPeriod
+        Seq(
+          "--cpu-quota",
+          quota.toString,
+          "--cpu-period",
+          period.toString
+        )
+    }
+
     // NOTE: --dns-option on modern versions of docker, but is --dns-opt on docker 1.12
     val dnsOptString = if (docker.clientVersion.startsWith("1.12")) { "--dns-opt" } else { "--dns-option" }
     val args = Seq(
       "--cpu-shares",
-      cpuShares.toString,
+      cpu match {
+        case Left(cpuShares) => cpuShares.toString
+        case Right(cpuTime) => cpuTime.toCpuShares.toString},
       "--memory",
       s"${memory.toMB}m",
       "--memory-swap",
       s"${memory.toMB}m",
       "--network",
       network) ++
+      cfsOptions ++
       environmentArgs ++
       dnsServers.flatMap(d => Seq("--dns", d)) ++
       dnsSearch.flatMap(d => Seq("--dns-search", d)) ++
@@ -163,7 +180,7 @@ object DockerContainer {
  * @param id the id of the container
  * @param addr the ip of the container
  */
-class DockerContainer(protected val id: ContainerId,
+class DockerContainer(protected[core] val id: ContainerId,
                       protected[core] val addr: ContainerAddress,
                       protected val useRunc: Boolean)(implicit docker: DockerApiWithFileAccess,
                                                       runc: RuncApi,
@@ -189,6 +206,10 @@ class DockerContainer(protected val id: ContainerId,
   override def destroy()(implicit transid: TransactionId): Future[Unit] = {
     super.destroy()
     docker.rm(id)
+  }
+
+  def resize(memory: Option[ByteSize], cpu: Option[CpuTime])(implicit transactionId: TransactionId): Future[Unit] = {
+    docker.resize(id, memory, cpu)
   }
 
   /**

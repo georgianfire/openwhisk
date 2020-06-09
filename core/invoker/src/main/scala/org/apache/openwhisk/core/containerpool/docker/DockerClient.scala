@@ -38,6 +38,7 @@ import org.apache.openwhisk.common.{Logging, LoggingMarkers, MetricEmitter, Tran
 import org.apache.openwhisk.core.ConfigKeys
 import org.apache.openwhisk.core.containerpool.ContainerId
 import org.apache.openwhisk.core.containerpool.ContainerAddress
+import org.apache.openwhisk.core.entity.{ByteSize, CpuTime}
 
 import scala.concurrent.duration.Duration
 
@@ -63,7 +64,8 @@ case class DockerClientTimeoutConfig(run: Duration,
                                      pause: Duration,
                                      unpause: Duration,
                                      version: Duration,
-                                     inspect: Duration)
+                                     inspect: Duration,
+                                     resize: Duration)
 
 /**
  * Configuration for docker client
@@ -211,6 +213,40 @@ class DockerClient(dockerHost: Option[String] = None,
       case Failure(t) => transid.failed(this, start, t.getMessage, ErrorLevel)
     }
   }
+
+  override def resize(id: ContainerId,
+                      memory: Option[ByteSize],
+                      cpu: Option[CpuTime])(
+    implicit transactionId: TransactionId): Future[Unit] = {
+    require(memory.isDefined || cpu.isDefined, "Either memory or cpu needs to be specified.")
+
+    val args: Seq[String] = Seq("update", id.asString) ++
+      memory.map { memory =>
+        Seq(
+          "--memory",
+          s"${memory.toMB}m",
+          "--memory-swap",
+          s"${memory.toMB}m")
+      }.getOrElse(Seq.empty) ++
+      cpu.map { cpu =>
+        val (quota, period) = cpu.toCfsQuotaAndPeriod
+        Seq(
+          "--cpu-shares",
+          cpu.toCpuShares.toString,
+          "--cpu-quota",
+          quota.toString,
+          "--cpu-period",
+          period.toString
+        )
+      }.getOrElse(Seq.empty)
+
+
+    Future {
+      blocking {
+        runCmd(args, config.timeouts.resize).map(_ => ())
+      }
+    }
+  }
 }
 
 trait DockerApi {
@@ -294,6 +330,11 @@ trait DockerApi {
    * @return a Future containing whether the container was killed or not
    */
   def isOomKilled(id: ContainerId)(implicit transid: TransactionId): Future[Boolean]
+
+  def resize(id: ContainerId,
+             memory: Option[ByteSize],
+             cpu: Option[CpuTime])(
+    implicit transactionId: TransactionId): Future[Unit]
 }
 
 /** Indicates any error while starting a container that leaves a broken container behind that needs to be removed */

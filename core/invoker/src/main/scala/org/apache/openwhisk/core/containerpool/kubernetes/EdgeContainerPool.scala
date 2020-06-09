@@ -3,7 +3,7 @@ package org.apache.openwhisk.core.containerpool.kubernetes
 import akka.actor.{Actor, ActorRef, ActorRefFactory, Props}
 import org.apache.openwhisk.common.{AkkaLogging, Logging, LoggingMarkers, MetricEmitter}
 import org.apache.openwhisk.core.connector.ActivationMessage
-import org.apache.openwhisk.core.containerpool.{ContainerId, ContainerRemoved, Resize, Run, RunWithSize}
+import org.apache.openwhisk.core.containerpool.{ContainerId, ContainerRemoved, Run, RunWithSize}
 import org.apache.openwhisk.core.entity.{ByteSize, CpuTime, ExecutableWhiskAction}
 import org.apache.openwhisk.core.entity.size._
 
@@ -62,8 +62,8 @@ class EdgeContainerPool(containerFactory: ActorRefFactory => ActorRef) extends A
       msg match{
         case RunWithEphemeralContainer(action, msg) =>
           val ephemeralContainer = containerFactory(context)
-          ephemeralContainer ! RunWithSize(action, msg, 256.MB, CpuTime(200))
-          ephemeralContainer ! Resize(None, Some(CpuTime(100)))
+          ephemeralContainer ! RunWithSize(action, msg, 256.MB, CpuTime(100))
+          // ephemeralContainer ! Remove
           containerDataByRef = containerDataByRef.updated(ephemeralContainer, EdgeContainerData(isEphermal=true))
 
         case RunOnContainer(action, msg, containerId) =>

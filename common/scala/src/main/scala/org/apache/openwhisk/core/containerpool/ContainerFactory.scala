@@ -102,11 +102,13 @@ trait ContainerFactory {
 
   def createContainerWithFixedSize(tid: TransactionId,
                                    name: String,
-                                   actionName: ExecManifest.ImageName,
+                                   actionImage: ExecManifest.ImageName,
                                    isUserProvidedImage: Boolean,
                                    memory: ByteSize,
                                    cpu: CpuTime,
-                                   action: Option[ExecutableWhiskAction])(implicit config: WhiskConfig, logging: Logging): Future[Container]
+                                   action: Option[ExecutableWhiskAction])(implicit config: WhiskConfig, logging: Logging): Future[Container] = {
+    throw new NotImplementedError("This method is only implemented in DockerContainer")
+  }
 
   def createContainer(tid: TransactionId,
                       name: String,

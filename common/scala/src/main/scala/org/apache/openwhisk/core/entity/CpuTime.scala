@@ -2,6 +2,10 @@ package org.apache.openwhisk.core.entity
 
 case class CpuTime(milliCpus: Int) {
   require(milliCpus > 0, "Cpu time must be positive")
+
+  def toCpuShares: Int = math.floor(milliCpus.doubleValue / 1000 * 1024).toInt
+
+  def toCfsQuotaAndPeriod: (Int, Int) = (milliCpus * 100, 100000)
   /**
    * TODO: add methods to convert to cpu shares and quota/period for docker
    * references:

@@ -49,7 +49,7 @@ import org.apache.openwhisk.core.ConfigKeys
 import org.apache.openwhisk.core.ack.ActiveAck
 import org.apache.openwhisk.core.connector.{ActivationMessage, CombinedCompletionAndResultMessage, CompletionMessage, ResultMessage}
 import org.apache.openwhisk.core.containerpool.ContainerProxy.FactoryWithFixedSize
-import org.apache.openwhisk.core.containerpool.kubernetes.KubernetesContainer
+import org.apache.openwhisk.core.containerpool.docker.DockerContainer
 import org.apache.openwhisk.core.containerpool.logging.LogCollectingException
 import org.apache.openwhisk.core.database.UserContext
 import org.apache.openwhisk.core.entity.ExecManifest.ImageName
@@ -539,6 +539,12 @@ class ContainerProxy(factory: (TransactionId,
     // warm container failed
     case Event(_: FailureMessage, data: WarmedData) =>
       destroyContainer(data)
+
+    case Event(resizeJob: Resize, data: WarmedData) =>
+      implicit val transactionId: TransactionId = TransactionId.invokerNanny
+      val container = data.container
+      resize(container, resizeJob.memory, resizeJob.cpu)
+      stay()
   }
 
   when(Pausing) {
@@ -895,12 +901,12 @@ class ContainerProxy(factory: (TransactionId,
              memory: Option[ByteSize],
              cpu: Option[CpuTime])(implicit transid: TransactionId): Future[Unit] = {
     container match {
-      case container: KubernetesContainer =>
+      case container: DockerContainer =>
         logging.info(this, s"Resizing container ${container.id.asString}, memory: $memory, cpu: $cpu")
         container.resize(memory, cpu)
       case _ =>
         logging.error(this, "Could not resize container due to type mismatch")
-        Future.failed(new NotImplementedError("Resize is only implemented for KubernetesContainer, " +
+        Future.failed(new NotImplementedError("Resize is only implemented for DockerContainer, " +
         s"instead ${container.getClass} was received."))
     }
   }
