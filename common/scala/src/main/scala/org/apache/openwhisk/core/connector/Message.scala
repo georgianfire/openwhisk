@@ -26,6 +26,7 @@ import scala.concurrent.duration._
 import akka.http.scaladsl.model.StatusCodes._
 import java.util.concurrent.TimeUnit
 
+import org.apache.openwhisk.core.containerpool.ContainerId
 import org.apache.openwhisk.core.entity.ActivationResponse.{statusForCode, ERROR_FIELD}
 import org.apache.openwhisk.utils.JsHelpers
 
@@ -58,7 +59,8 @@ case class ActivationMessage(override val transid: TransactionId,
                              content: Option[JsObject],
                              initArgs: Set[String] = Set.empty,
                              cause: Option[ActivationId] = None,
-                             traceContext: Option[Map[String, String]] = None)
+                             traceContext: Option[Map[String, String]] = None,
+                             containerId: Option[ContainerId] = None)
     extends Message {
 
   override def serialize = ActivationMessage.serdes.write(this).compactPrint
@@ -171,7 +173,8 @@ object ActivationMessage extends DefaultJsonProtocol {
   def parse(msg: String) = Try(serdes.read(msg.parseJson))
 
   private implicit val fqnSerdes = FullyQualifiedEntityName.serdes
-  implicit val serdes = jsonFormat11(ActivationMessage.apply)
+  private implicit val cidSerdes = jsonFormat1(ContainerId)
+  implicit val serdes = jsonFormat12(ActivationMessage.apply)
 }
 
 object CombinedCompletionAndResultMessage extends DefaultJsonProtocol {
