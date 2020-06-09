@@ -80,7 +80,7 @@ class InvokerReactive(
    * task or actor because further operation does not make sense if something
    * goes wrong here. Initialization will throw an exception upon failure.
    */
-  private val containerFactory =
+  protected[invoker] val containerFactory =
     SpiLoader
       .get[ContainerFactoryProvider]
       .instance(
@@ -101,13 +101,13 @@ class InvokerReactive(
     }
 
   /** Initialize needed databases */
-  private val entityStore = WhiskEntityStore.datastore()
+  protected[invoker] val entityStore = WhiskEntityStore.datastore()
   private val activationStore =
     SpiLoader.get[ActivationStoreProvider].instance(actorSystem, materializer, logging)
 
   private val authStore = WhiskAuthStore.datastore()
 
-  private val namespaceBlacklist = new NamespaceBlacklist(authStore)
+  protected[invoker] val namespaceBlacklist = new NamespaceBlacklist(authStore)
 
   Scheduler.scheduleWaitAtMost(loadConfigOrThrow[NamespaceBlacklistConfig](ConfigKeys.blacklist).pollInterval) { () =>
     logging.debug(this, "running background job to update blacklist")
@@ -129,19 +129,19 @@ class InvokerReactive(
   private val consumer =
     msgProvider.getConsumer(config, topic, topic, maxPeek, maxPollInterval = TimeLimit.MAX_DURATION + 1.minute)
 
-  private val activationFeed = actorSystem.actorOf(Props {
+  protected[invoker] val activationFeed = actorSystem.actorOf(Props {
     new MessageFeed("activation", logging, consumer, maxPeek, 1.second, processActivationMessage)
   })
 
-  private val ack = {
+  protected[invoker] val ack = {
     val sender = if (UserEvents.enabled) Some(new UserEventSender(producer)) else None
     new MessagingActiveAck(producer, instance, sender)
   }
 
-  private val collectLogs = new LogStoreCollector(logsProvider)
+  protected[invoker] val collectLogs = new LogStoreCollector(logsProvider)
 
   /** Stores an activation in the database. */
-  private val store = (tid: TransactionId, activation: WhiskActivation, isBlocking: Boolean, context: UserContext) => {
+  protected[invoker] val store = (tid: TransactionId, activation: WhiskActivation, isBlocking: Boolean, context: UserContext) => {
     implicit val transid: TransactionId = tid
     activationStore.storeAfterCheck(activation, isBlocking, None, context)(tid, notifier = None, logging)
   }
@@ -265,7 +265,7 @@ class InvokerReactive(
    *
    * Set the kind annotation to `Exec.UNKNOWN` since it is not known to the invoker because the action fetch failed.
    */
-  private def generateFallbackActivation(msg: ActivationMessage, response: ActivationResponse): WhiskActivation = {
+  protected[invoker] def generateFallbackActivation(msg: ActivationMessage, response: ActivationResponse): WhiskActivation = {
     val now = Instant.now
     val causedBy = if (msg.causedBySequence) {
       Some(Parameters(WhiskActivation.causedByAnnotation, JsString(Exec.SEQUENCE)))
