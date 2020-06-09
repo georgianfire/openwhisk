@@ -20,7 +20,7 @@ package org.apache.openwhisk.core.containerpool
 import akka.actor.ActorSystem
 import org.apache.openwhisk.common.{Logging, TransactionId}
 import org.apache.openwhisk.core.WhiskConfig
-import org.apache.openwhisk.core.entity.{ByteSize, ExecManifest, ExecutableWhiskAction, InvokerInstanceId}
+import org.apache.openwhisk.core.entity.{ByteSize, CpuTime, ExecManifest, ExecutableWhiskAction, InvokerInstanceId}
 import org.apache.openwhisk.spi.Spi
 
 import scala.concurrent.Future
@@ -99,6 +99,14 @@ trait ContainerFactory {
     action: Option[ExecutableWhiskAction])(implicit config: WhiskConfig, logging: Logging): Future[Container] = {
     createContainer(tid, name, actionImage, userProvidedImage, memory, cpuShares)
   }
+
+  def createContainerWithFixedSize(tid: TransactionId,
+                                   name: String,
+                                   actionName: ExecManifest.ImageName,
+                                   isUserProvidedImage: Boolean,
+                                   memory: ByteSize,
+                                   cpu: CpuTime,
+                                   action: Option[ExecutableWhiskAction])(implicit config: WhiskConfig, logging: Logging): Future[Container]
 
   def createContainer(tid: TransactionId,
                       name: String,

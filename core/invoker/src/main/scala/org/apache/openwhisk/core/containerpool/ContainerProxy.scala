@@ -47,12 +47,9 @@ import spray.json._
 import org.apache.openwhisk.common.{AkkaLogging, Counter, LoggingMarkers, TransactionId}
 import org.apache.openwhisk.core.ConfigKeys
 import org.apache.openwhisk.core.ack.ActiveAck
-import org.apache.openwhisk.core.connector.{
-  ActivationMessage,
-  CombinedCompletionAndResultMessage,
-  CompletionMessage,
-  ResultMessage
-}
+import org.apache.openwhisk.core.connector.{ActivationMessage, CombinedCompletionAndResultMessage, CompletionMessage, ResultMessage}
+import org.apache.openwhisk.core.containerpool.ContainerProxy.FactoryWithFixedSize
+import org.apache.openwhisk.core.containerpool.kubernetes.KubernetesContainer
 import org.apache.openwhisk.core.containerpool.logging.LogCollectingException
 import org.apache.openwhisk.core.database.UserContext
 import org.apache.openwhisk.core.entity.ExecManifest.ImageName
@@ -193,10 +190,24 @@ case class WarmedData(override val container: Container,
 }
 
 // Events received by the actor
-case class Start(exec: CodeExec[_], memoryLimit: ByteSize)
-case class Run(action: ExecutableWhiskAction, msg: ActivationMessage, retryLogDeadline: Option[Deadline] = None)
+sealed abstract class AbstractStart(val exec: CodeExec[_])
+case class Start(override val exec: CodeExec[_], memoryLimit: ByteSize) extends AbstractStart(exec)
+sealed abstract class AbstractRun(val action: ExecutableWhiskAction, val msg: ActivationMessage)
+case class Run(override val action: ExecutableWhiskAction,
+               override val msg: ActivationMessage,
+               retryLogDeadline: Option[Deadline] = None) extends AbstractRun(action, msg)
 case object Remove
 case class HealthPingEnabled(enabled: Boolean)
+
+// Events receivent by the actor from EdgeContainerPool
+case class StartWithSize(override val exec: CodeExec[_], memory: ByteSize, cpu: CpuTime) extends AbstractStart(exec)
+
+case class RunWithSize(override val action: ExecutableWhiskAction,
+                       override val msg: ActivationMessage,
+                       memory: ByteSize,
+                       cpu: CpuTime) extends AbstractRun(action, msg)
+
+case class Resize(memory: Option[ByteSize], cpu: Option[CpuTime])
 
 // Events sent by the actor
 case class NeedWork(data: ContainerData)
@@ -258,7 +269,8 @@ class ContainerProxy(factory: (TransactionId,
                      healtCheckConfig: ContainerProxyHealthCheckConfig,
                      unusedTimeout: FiniteDuration,
                      pauseGrace: FiniteDuration,
-                     testTcp: Option[ActorRef])
+                     testTcp: Option[ActorRef],
+                     factoryWithFixedSize: Option[FactoryWithFixedSize])
     extends FSM[ContainerState, ContainerData]
     with Stash {
   implicit val ec = context.system.dispatcher
@@ -279,33 +291,65 @@ class ContainerProxy(factory: (TransactionId,
 
   when(Uninitialized) {
     // pre warm a container (creates a stem cell container)
-    case Event(job: Start, _) =>
-      factory(
-        TransactionId.invokerWarmup,
-        ContainerProxy.containerName(instance, "prewarm", job.exec.kind),
-        job.exec.image,
-        job.exec.pull,
-        job.memoryLimit,
-        poolConfig.cpuShare(job.memoryLimit),
-        None)
-        .map(container => PreWarmCompleted(PreWarmedData(container, job.exec.kind, job.memoryLimit)))
-        .pipeTo(self)
+    case Event(job: AbstractStart, _) =>
+      val container = job match {
+        case Start(exec, memoryLimit) =>
+          factory(
+            TransactionId.invokerWarmup,
+            ContainerProxy.containerName(instance, "prewarm", exec.kind),
+            exec.image,
+            exec.pull,
+            memoryLimit,
+            poolConfig.cpuShare(memoryLimit),
+            None)
+        case StartWithSize(exec, memory, cpu) =>
+          val factory = factoryWithFixedSize.get
+          factory(
+            TransactionId.invokerWarmup,
+            ContainerProxy.containerName(instance, exec.image.name, exec.kind),
+            exec.image,
+            exec.pull,
+            memory,
+            cpu,
+            None)
+      }
+
+      container
+        .map(container => PreWarmCompleted(job match {
+          case Start(exec, memoryLimit) => PreWarmedData(container, exec.kind, memoryLimit)
+          case StartWithSize(exec, memory, cpu) => PreWarmedData(container, exec.kind, memory)
+        })).pipeTo(self)
 
       goto(Starting)
 
     // cold start (no container to reuse or available stem cell container)
-    case Event(job: Run, _) =>
+    case Event(job: AbstractRun, _) =>
       implicit val transid = job.msg.transid
       activeCount += 1
       // create a new container
-      val container = factory(
-        job.msg.transid,
-        ContainerProxy.containerName(instance, job.msg.user.namespace.name.asString, job.action.name.asString),
-        job.action.exec.image,
-        job.action.exec.pull,
-        job.action.limits.memory.megabytes.MB,
-        poolConfig.cpuShare(job.action.limits.memory.megabytes.MB),
-        Some(job.action))
+      val container =
+        job match {
+          case Run(action, msg, _) => factory(
+            msg.transid,
+            ContainerProxy.containerName(instance, msg.user.namespace.name.asString, action.name.asString),
+            action.exec.image,
+            action.exec.pull,
+            action.limits.memory.megabytes.MB,
+            poolConfig.cpuShare(action.limits.memory.megabytes.MB),
+            Some(action))
+
+          case RunWithSize(action, msg, memory, cpu) =>
+            val factory = factoryWithFixedSize.get
+            factory(
+              msg.transid,
+              ContainerProxy.containerName(instance, msg.user.namespace.name.asString, action.name.asString),
+              action.exec.image,
+              action.exec.pull,
+              memory,
+              cpu,
+              Some(action)
+            )
+        }
 
       // container factory will either yield a new container ready to execute the action, or
       // starting up the container failed; for the latter, it's either an internal error starting
@@ -676,7 +720,7 @@ class ContainerProxy(factory: (TransactionId,
    * @return a future completing after logs have been collected and
    *         added to the WhiskActivation
    */
-  def initializeAndRun(container: Container, job: Run, reschedule: Boolean = false)(
+  def initializeAndRun(container: Container, job: AbstractRun, reschedule: Boolean = false)(
     implicit tid: TransactionId): Future[WhiskActivation] = {
     val actionTimeout = job.action.limits.timeout.duration
     val unlockedContent = job.msg.content match {
@@ -846,12 +890,35 @@ class ContainerProxy(factory: (TransactionId,
       case Right(act)  => Future.successful(act)
     }
   }
+
+  def resize(container: Container,
+             memory: Option[ByteSize],
+             cpu: Option[CpuTime])(implicit transid: TransactionId): Future[Unit] = {
+    container match {
+      case container: KubernetesContainer =>
+        logging.info(this, s"Resizing container ${container.id.asString}, memory: $memory, cpu: $cpu")
+        container.resize(memory, cpu)
+      case _ =>
+        logging.error(this, "Could not resize container due to type mismatch")
+        Future.failed(new NotImplementedError("Resize is only implemented for KubernetesContainer, " +
+        s"instead ${container.getClass} was received."))
+    }
+  }
 }
 
 final case class ContainerProxyTimeoutConfig(idleContainer: FiniteDuration, pauseGrace: FiniteDuration)
 final case class ContainerProxyHealthCheckConfig(enabled: Boolean, checkPeriod: FiniteDuration, maxFails: Int)
 
 object ContainerProxy {
+  type FactoryWithFixedSize = (
+    TransactionId,
+    String,
+    ImageName,
+    Boolean,
+    ByteSize,
+    CpuTime,
+    Option[ExecutableWhiskAction]) => Future[Container]
+
   def props(factory: (TransactionId,
                       String,
                       ImageName,
@@ -868,7 +935,8 @@ object ContainerProxy {
               loadConfigOrThrow[ContainerProxyHealthCheckConfig](ConfigKeys.containerProxyHealth),
             unusedTimeout: FiniteDuration = timeouts.idleContainer,
             pauseGrace: FiniteDuration = timeouts.pauseGrace,
-            tcp: Option[ActorRef] = None) =
+            tcp: Option[ActorRef] = None,
+            factoryWithFixedSize: Option[FactoryWithFixedSize] = None) =
     Props(
       new ContainerProxy(
         factory,
@@ -880,7 +948,8 @@ object ContainerProxy {
         healthCheckConfig,
         unusedTimeout,
         pauseGrace,
-        tcp))
+        tcp,
+        factoryWithFixedSize))
 
   // Needs to be thread-safe as it's used by multiple proxies concurrently.
   private val containerCount = new Counter
@@ -911,7 +980,7 @@ object ContainerProxy {
    * @param response the response to return to the user
    * @return a WhiskActivation to be sent to the user
    */
-  def constructWhiskActivation(job: Run,
+  def constructWhiskActivation(job: AbstractRun,
                                initInterval: Option[Interval],
                                totalInterval: Interval,
                                isTimeout: Boolean,
