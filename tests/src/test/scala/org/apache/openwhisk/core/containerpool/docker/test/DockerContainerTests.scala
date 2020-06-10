@@ -43,7 +43,7 @@ import org.apache.openwhisk.common.LogMarker
 import org.apache.openwhisk.common.TransactionId
 import org.apache.openwhisk.core.containerpool._
 import org.apache.openwhisk.core.containerpool.docker._
-import org.apache.openwhisk.core.entity.ActivationResponse
+import org.apache.openwhisk.core.entity.{ActivationResponse, ByteSize, CpuTime}
 import org.apache.openwhisk.core.entity.ActivationResponse.ContainerResponse
 import org.apache.openwhisk.core.entity.ActivationResponse.Timeout
 import org.apache.openwhisk.core.entity.size._
@@ -146,7 +146,7 @@ class DockerContainerTests
       transid = transid,
       image = Right(ImageName(image)),
       memory = memory,
-      cpuShares = cpuShares,
+      cpu = Left(cpuShares),
       environment = environment,
       network = network,
       name = Some(name),
@@ -854,5 +854,9 @@ class DockerContainerTests
       rawContainerLogsInvocations += ((containerId, fromPos, pollInterval))
       Source.single(ByteString.empty)
     }
+
+    override def resize(id: ContainerId,
+                        memory: Option[ByteSize],
+                        cpu: Option[CpuTime])(implicit transactionId: TransactionId): Future[Unit] = ???
   }
 }
