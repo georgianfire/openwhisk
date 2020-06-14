@@ -126,6 +126,12 @@ object WskAdmin {
     override def baseCommand: mutable.Buffer[String] = WskAdmin.baseCommand
   }
 
+  val kubeWskadmin = new RunCliCmd {
+    override def baseCommand: mutable.Buffer[String] = Buffer(
+      "kubectl", "-n", "openwhisk", "-ti", "exec", "owdev-wskadmin", "--", "wskadmin"
+    )
+  }
+
   private val binDir = WhiskProperties.getFileRelativeToWhiskHome("bin")
   private val binaryName = "wskadmin"
 

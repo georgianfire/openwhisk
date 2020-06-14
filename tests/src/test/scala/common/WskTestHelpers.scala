@@ -309,8 +309,7 @@ trait WskTestHelpers extends Matchers {
     }
   }
 
-  def getAdditionalTestSubject(newUser: String): WskProps = {
-    import WskAdmin.wskadmin
+  def getAdditionalTestSubject(newUser: String)(implicit wskadmin: RunCliCmd = WskAdmin.wskadmin): WskProps = {
     WskProps(namespace = newUser, authKey = wskadmin.cli(Seq("user", "create", newUser)).stdout.trim)
   }
 
