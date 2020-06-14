@@ -769,7 +769,8 @@ class ActionsApiTests extends ControllerTestCommon with WhiskActionsApi {
           Some(action.limits.timeout),
           Some(action.limits.memory),
           Some(action.limits.logs),
-          Some(action.limits.concurrency))))
+          Some(action.limits.concurrency),
+          Some(action.limits.weight))))
     Put(s"$collectionPath/${action.name}", content) ~> Route.seal(routes(creds)) ~> check {
       deleteAction(action.docid)
       status should be(OK)
@@ -805,7 +806,8 @@ class ActionsApiTests extends ControllerTestCommon with WhiskActionsApi {
               Some(action.limits.timeout),
               Some(action.limits.memory),
               Some(action.limits.logs),
-              Some(action.limits.concurrency))))
+              Some(action.limits.concurrency),
+              Some(action.limits.weight))))
 
         // first request invalidates any previous entries and caches new result
         Put(s"$collectionPath/${action.name}", content) ~> Route.seal(routes(creds)(transid())) ~> check {
@@ -910,7 +912,8 @@ class ActionsApiTests extends ControllerTestCommon with WhiskActionsApi {
               Some(action.limits.timeout),
               Some(action.limits.memory),
               Some(action.limits.logs),
-              Some(action.limits.concurrency))))
+              Some(action.limits.concurrency),
+              Some(action.limits.weight))))
         val cacheKey = s"${CacheKey(action)}".replace("(", "\\(").replace(")", "\\)")
 
         val expectedPutLog =
@@ -1001,7 +1004,8 @@ class ActionsApiTests extends ControllerTestCommon with WhiskActionsApi {
           Some(action.limits.timeout),
           Some(action.limits.memory),
           Some(action.limits.logs),
-          Some(action.limits.concurrency))))
+          Some(action.limits.concurrency),
+          Some(action.limits.weight))))
     val name = action.name
     val cacheKey = s"${CacheKey(action)}".replace("(", "\\(").replace(")", "\\)")
     val notExpectedGetLog = Seq(
@@ -1087,7 +1091,8 @@ class ActionsApiTests extends ControllerTestCommon with WhiskActionsApi {
               Some(action.limits.timeout),
               Some(action.limits.memory),
               Some(action.limits.logs),
-              Some(action.limits.concurrency))))
+              Some(action.limits.concurrency),
+              Some(action.limits.weight))))
         val name = action.name
         val cacheKey = s"${CacheKey(action)}".replace("(", "\\(").replace(")", "\\)")
         val expectedGetLog = Seq(
@@ -1135,7 +1140,8 @@ class ActionsApiTests extends ControllerTestCommon with WhiskActionsApi {
           Some(action.limits.timeout),
           Some(action.limits.memory),
           Some(action.limits.logs),
-          Some(action.limits.concurrency))))
+          Some(action.limits.concurrency),
+          Some(action.limits.weight))))
     val name = action.name
     val cacheKey = s"${CacheKey(action)}".replace("(", "\\(").replace(")", "\\)")
     val expectedGetLog = Seq(
@@ -1194,7 +1200,8 @@ class ActionsApiTests extends ControllerTestCommon with WhiskActionsApi {
               Some(action.limits.timeout),
               Some(action.limits.memory),
               Some(action.limits.logs),
-              Some(action.limits.concurrency))))
+              Some(action.limits.concurrency),
+              Some(action.limits.weight))))
         val name = action.name
         val cacheKey = s"${CacheKey(action)}".replace("(", "\\(").replace(")", "\\)")
         val expectedPutLog =
@@ -1261,7 +1268,8 @@ class ActionsApiTests extends ControllerTestCommon with WhiskActionsApi {
           Some(actionOldSchema.limits.timeout),
           Some(actionOldSchema.limits.memory),
           Some(actionOldSchema.limits.logs),
-          Some(actionOldSchema.limits.concurrency))))
+          Some(actionOldSchema.limits.concurrency),
+          Some(actionOldSchema.limits.weight))))
     val expectedPutLog =
       Seq(s"uploading attachment '[\\w-/:]+' of document 'id: ${actionOldSchema.namespace}/${actionOldSchema.name}")
         .mkString("(?s).*")
@@ -1339,7 +1347,8 @@ class ActionsApiTests extends ControllerTestCommon with WhiskActionsApi {
           Some(TimeLimit(TimeLimit.MAX_DURATION)),
           Some(MemoryLimit(MemoryLimit.MAX_MEMORY)),
           Some(LogLimit(LogLimit.MAX_LOGSIZE)),
-          Some(ConcurrencyLimit(ConcurrencyLimit.MAX_CONCURRENT)))))
+          Some(ConcurrencyLimit(ConcurrencyLimit.MAX_CONCURRENT)),
+          Some(Weight(Weight.MAX_WEIGHT)))))
     put(entityStore, action)
     Put(s"$collectionPath/${action.name}?overwrite=true", content) ~> Route.seal(routes(creds)) ~> check {
       deleteAction(action.docid)

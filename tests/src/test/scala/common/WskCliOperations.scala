@@ -205,7 +205,9 @@ class CliActionOperations(override val wsk: RunCliCmd)
     update: Boolean = false,
     web: Option[String] = None,
     websecure: Option[String] = None,
-    expectedExitCode: Int = SUCCESS_EXIT)(implicit wp: WskProps): RunResult = {
+    expectedExitCode: Int = SUCCESS_EXIT,
+    weight: Option[Int] = None)(implicit wp: WskProps): RunResult = {
+    // Note that the weight setting is not yet implemented since that requires modifying the openwhisk cli
     val params = Seq(noun, if (!update) "create" else "update", "--auth", wp.authKey, fqn(name)) ++ {
       artifact map { Seq(_) } getOrElse Seq.empty
     } ++ {

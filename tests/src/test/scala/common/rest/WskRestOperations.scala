@@ -274,7 +274,8 @@ class RestActionOperations(implicit val actorSystem: ActorSystem)
     update: Boolean = false,
     web: Option[String] = None,
     websecure: Option[String] = None,
-    expectedExitCode: Int = OK.intValue)(implicit wp: WskProps): RestResult = {
+    expectedExitCode: Int = OK.intValue,
+    weight: Option[Int] = None)(implicit wp: WskProps): RestResult = {
 
     val (namespace, actionName) = getNamespaceEntityName(name)
     val (paramsInput, annosInput) = getParamsAnnos(parameters, annotations, parameterFile, annotationFile, web = web)
@@ -345,7 +346,8 @@ class RestActionOperations(implicit val actorSystem: ActorSystem)
       timeout.map(t => Map("timeout" -> t.toMillis.toJson)).getOrElse(Map.empty) ++
         logsize.map(log => Map("logs" -> log.toMB.toJson)).getOrElse(Map.empty) ++
         memory.map(m => Map("memory" -> m.toMB.toJson)).getOrElse(Map.empty) ++
-        concurrency.map(c => Map("concurrency" -> c.toJson)).getOrElse(Map.empty)
+        concurrency.map(c => Map("concurrency" -> c.toJson)).getOrElse(Map.empty) ++
+        weight.map(w => Map("weight" -> w.toJson)).getOrElse(Map.empty)
     }
 
     val body: Map[String, JsValue] = if (!update) {
