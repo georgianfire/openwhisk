@@ -79,6 +79,14 @@ class LimitsCommand extends Subcommand("limits") with WhiskCommand {
         name = "storeActivations",
         noshort = true,
         default = None)
+    val weight = {
+      opt[Int](
+        descr = "weight of this namespace",
+        argName = "WEIGHT",
+        validate = _ >= 0,
+        name = "weight",
+        noshort = true)
+    }
 
     lazy val limits: LimitEntity =
       new LimitEntity(
@@ -88,7 +96,8 @@ class LimitsCommand extends Subcommand("limits") with WhiskCommand {
           concurrentInvocations.toOption,
           firesPerMinute.toOption,
           allowedKinds.toOption.map(_.toSet),
-          storeActivations.toOption.map(_.toBoolean)))
+          storeActivations.toOption.map(_.toBoolean),
+          weight.toOption.map(Weight(_))))
   }
   addSubcommand(set)
 
@@ -148,7 +157,8 @@ class LimitsCommand extends Subcommand("limits") with WhiskCommand {
           l.invocationsPerMinute.map(i => s"invocationsPerMinute = $i"),
           l.firesPerMinute.map(i => s"firesPerMinute = $i"),
           l.allowedKinds.map(k => s"allowedKinds = ${k.mkString(", ")}"),
-          l.storeActivations.map(sa => s"storeActivations = $sa")).flatten.mkString(Properties.lineSeparator)
+          l.storeActivations.map(sa => s"storeActivations = $sa"),
+          l.weight.map(w => s"weight = $w")).flatten.mkString(Properties.lineSeparator)
         Right(msg)
       }
       .recover {

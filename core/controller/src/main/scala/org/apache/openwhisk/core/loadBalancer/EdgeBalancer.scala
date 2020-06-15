@@ -73,6 +73,9 @@ class EdgeBalancer(
 
   override def publish(action: ExecutableWhiskActionMetaData, msg: ActivationMessage)
                       (implicit transid: TransactionId): Future[Future[Either[ActivationId, WhiskActivation]]] = {
+    logging.info(this, s"User: ${msg.user.namespace.name.asString} with weight ${msg.user.limits.weight}")
+    logging.info(this, s"Action: ${action.name.asString} with weight: ${action.limits.weight}")
+
     EdgeBalancer.schedule(msg.action, schedulingState).map{ containerInfo =>
       val invoker = containerInfo.invoker
       val msgWithContainerId = msg.copy(containerId = Some(containerInfo.id))

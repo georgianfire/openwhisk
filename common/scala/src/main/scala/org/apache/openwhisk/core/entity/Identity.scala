@@ -35,12 +35,13 @@ case class UserLimits(invocationsPerMinute: Option[Int] = None,
                       concurrentInvocations: Option[Int] = None,
                       firesPerMinute: Option[Int] = None,
                       allowedKinds: Option[Set[String]] = None,
-                      storeActivations: Option[Boolean] = None)
+                      storeActivations: Option[Boolean] = None,
+                      weight: Option[Weight] = None)
 
 object UserLimits extends DefaultJsonProtocol {
   val standardUserLimits = UserLimits()
 
-  implicit val serdes = jsonFormat5(UserLimits.apply)
+  implicit val serdes = jsonFormat6(UserLimits.apply)
 }
 
 protected[core] case class Namespace(name: EntityName, uuid: UUID)
@@ -132,6 +133,7 @@ object Identity extends MultipleReadersSingleWriterCache[Option[Identity], DocIn
   }
 
   protected[entity] def rowToIdentity(row: JsObject, key: String)(implicit transid: TransactionId, logger: Logging) = {
+    logger.info(this, s"rowToIdentity: ${row.toString()}")
     row.getFields("id", "value", "doc") match {
       case Seq(JsString(id), JsObject(value), doc) =>
         val limits =
