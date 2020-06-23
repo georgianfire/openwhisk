@@ -170,8 +170,12 @@ object Invoker {
     val topicName = topicBaseName + assignedInvokerId
 
     val maxMessageBytes = Some(ActivationEntityLimit.MAX_ACTIVATION_LIMIT)
-    val invokerInstance =
-      InvokerInstanceId(assignedInvokerId, cmdLineArgs.uniqueName, cmdLineArgs.displayedName, poolConfig.userMemory)
+    val invokerInstance = InvokerInstanceId(
+      assignedInvokerId,
+      cmdLineArgs.uniqueName,
+      cmdLineArgs.displayedName,
+      poolConfig.userMemory,
+      poolConfig.userCpu)
 
     val msgProvider = SpiLoader.get[MessagingProvider]
     if (msgProvider

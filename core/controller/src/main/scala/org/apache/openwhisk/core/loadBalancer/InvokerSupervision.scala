@@ -189,14 +189,14 @@ class InvokerPool(childFactory: (ActorRefFactory, InvokerInstanceId) => ActorRef
 
   // Register a new invoker
   def registerInvoker(instanceId: InvokerInstanceId): ActorRef = {
-    logging.info(this, s"registered a new invoker: invoker${instanceId.toInt}")(TransactionId.invokerHealth)
+    logging.info(this, s"registered a new invoker: invoker${instanceId.toInt} with ${instanceId.userMemory} memory and ${instanceId.userCpu} cpu")(TransactionId.invokerHealth)
 
     // Grow the underlying status sequence to the size needed to contain the incoming ping. Dummy values are created
     // to represent invokers, where ping messages haven't arrived yet
     status = padToIndexed(
       status,
       instanceId.toInt + 1,
-      i => new InvokerHealth(InvokerInstanceId(i, userMemory = instanceId.userMemory), Offline))
+      i => new InvokerHealth(InvokerInstanceId(i, userMemory = instanceId.userMemory, userCpu = instanceId.userCpu), Offline))
     status = status.updated(instanceId.toInt, new InvokerHealth(instanceId, Offline))
 
     val ref = childFactory(context, instanceId)

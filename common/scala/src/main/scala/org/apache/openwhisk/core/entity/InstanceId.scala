@@ -26,10 +26,11 @@ import spray.json.DefaultJsonProtocol
  * @param uniqueName an identifier required for dynamic instance assignment by Zookeeper
  * @param displayedName an identifier that is required for the health protocol to correlate Kafka topics with invoker container names
  */
-case class InvokerInstanceId(val instance: Int,
+case class InvokerInstanceId(instance: Int,
                              uniqueName: Option[String] = None,
                              displayedName: Option[String] = None,
-                             val userMemory: ByteSize)
+                             userMemory: ByteSize,
+                             userCpu: CpuTime)
     extends InstanceId {
   def toInt: Int = instance
 
@@ -50,8 +51,9 @@ case class ControllerInstanceId(asString: String) extends InstanceId {
 }
 
 object InvokerInstanceId extends DefaultJsonProtocol {
-  import org.apache.openwhisk.core.entity.size.{serdes => xserds}
-  implicit val serdes = jsonFormat(InvokerInstanceId.apply, "instance", "uniqueName", "displayedName", "userMemory")
+  import org.apache.openwhisk.core.entity.size.{serdes => memorySerdes}
+  import org.apache.openwhisk.core.entity.CpuTime.{serdes => cpuSerdes}
+  implicit val serdes = jsonFormat(InvokerInstanceId.apply, "instance", "uniqueName", "displayedName", "userMemory", "userCpu")
 }
 
 object ControllerInstanceId extends DefaultJsonProtocol {
