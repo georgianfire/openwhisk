@@ -38,7 +38,7 @@ import scala.concurrent.Future
 import scala.concurrent.duration._
 import org.apache.openwhisk.common.Logging
 import org.apache.openwhisk.common.NestedSemaphore
-import org.apache.openwhisk.core.entity.FullyQualifiedEntityName
+import org.apache.openwhisk.core.entity.{ActivationId, BasicAuthenticationAuthKey, ByteSize, ControllerInstanceId, CpuTime, EntityName, EntityPath, ExecManifest, FullyQualifiedEntityName, Identity, InvokerInstanceId, MemoryLimit, Namespace, Secret, Subject, UUID, WhiskActionMetaData}
 import org.apache.openwhisk.common.TransactionId
 import org.apache.openwhisk.core.WhiskConfig
 import org.apache.openwhisk.core.connector.ActivationMessage
@@ -47,22 +47,7 @@ import org.apache.openwhisk.core.connector.Message
 import org.apache.openwhisk.core.connector.MessageConsumer
 import org.apache.openwhisk.core.connector.MessageProducer
 import org.apache.openwhisk.core.connector.MessagingProvider
-import org.apache.openwhisk.core.entity.ActivationId
-import org.apache.openwhisk.core.entity.BasicAuthenticationAuthKey
-import org.apache.openwhisk.core.entity.ControllerInstanceId
-import org.apache.openwhisk.core.entity.EntityName
-import org.apache.openwhisk.core.entity.EntityPath
-import org.apache.openwhisk.core.entity.ExecManifest
-import org.apache.openwhisk.core.entity.Identity
-import org.apache.openwhisk.core.entity.InvokerInstanceId
-import org.apache.openwhisk.core.entity.MemoryLimit
-import org.apache.openwhisk.core.entity.Namespace
-import org.apache.openwhisk.core.entity.Secret
-import org.apache.openwhisk.core.entity.Subject
-import org.apache.openwhisk.core.entity.UUID
-import org.apache.openwhisk.core.entity.WhiskActionMetaData
 import org.apache.openwhisk.core.entity.test.ExecHelpers
-import org.apache.openwhisk.core.entity.ByteSize
 import org.apache.openwhisk.core.entity.size._
 import org.apache.openwhisk.core.entity.test.ExecHelpers
 import org.apache.openwhisk.core.loadBalancer.FeedFactory
@@ -86,11 +71,12 @@ class ShardingContainerPoolBalancerTests
   behavior of "ShardingContainerPoolBalancerState"
 
   val defaultUserMemory: ByteSize = 1024.MB
+  val defaultUserCpu: CpuTime = CpuTime(milliCpus = 1000)
 
   def healthy(i: Int, memory: ByteSize = defaultUserMemory) =
-    new InvokerHealth(InvokerInstanceId(i, userMemory = memory), Healthy)
-  def unhealthy(i: Int) = new InvokerHealth(InvokerInstanceId(i, userMemory = defaultUserMemory), Unhealthy)
-  def offline(i: Int) = new InvokerHealth(InvokerInstanceId(i, userMemory = defaultUserMemory), Offline)
+    new InvokerHealth(InvokerInstanceId(i, userMemory = memory, userCpu = defaultUserCpu), Healthy)
+  def unhealthy(i: Int) = new InvokerHealth(InvokerInstanceId(i, userMemory = defaultUserMemory, userCpu = defaultUserCpu), Unhealthy)
+  def offline(i: Int) = new InvokerHealth(InvokerInstanceId(i, userMemory = defaultUserMemory, userCpu = defaultUserCpu), Offline)
 
   def semaphores(count: Int, max: Int): IndexedSeq[NestedSemaphore[FullyQualifiedEntityName]] =
     IndexedSeq.fill(count)(new NestedSemaphore[FullyQualifiedEntityName](max))
@@ -414,6 +400,7 @@ class ShardingContainerPoolBalancerTests
   implicit val am = ActorMaterializer()
   val config = new WhiskConfig(ExecManifest.requiredProperties)
   val invokerMem = 2000.MB
+  val invokerCpu = CpuTime(milliCpus = 2000)
   val concurrencyEnabled = Option(WhiskProperties.getProperty("whisk.action.concurrency")).exists(_.toBoolean)
   val concurrency = if (concurrencyEnabled) 5 else 1
   val actionMem = 256.MB
@@ -484,7 +471,7 @@ class ShardingContainerPoolBalancerTests
       new ShardingContainerPoolBalancer(config, ControllerInstanceId("0"), feedProbe, invokerPoolProbe, mockMessaging)
 
     val invokers = IndexedSeq.tabulate(numInvokers) { i =>
-      new InvokerHealth(InvokerInstanceId(i, userMemory = invokerMem), Healthy)
+      new InvokerHealth(InvokerInstanceId(i, userMemory = invokerMem, userCpu = invokerCpu), Healthy)
     }
     balancer.schedulingState.updateInvokers(invokers)
     val invocationNamespace = EntityName("invocationSpace")

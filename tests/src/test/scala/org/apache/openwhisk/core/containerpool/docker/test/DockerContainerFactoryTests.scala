@@ -42,7 +42,7 @@ import org.apache.openwhisk.core.containerpool.docker.DockerApiWithFileAccess
 import org.apache.openwhisk.core.containerpool.docker.DockerContainerFactory
 import org.apache.openwhisk.core.containerpool.docker.DockerContainerFactoryConfig
 import org.apache.openwhisk.core.containerpool.docker.RuncApi
-import org.apache.openwhisk.core.entity.{ByteSize, ExecManifest, InvokerInstanceId}
+import org.apache.openwhisk.core.entity.{ByteSize, CpuTime, ExecManifest, InvokerInstanceId}
 import org.apache.openwhisk.core.entity.size._
 import pureconfig._
 import pureconfig.generic.auto._
@@ -65,6 +65,7 @@ class DockerContainerFactoryTests
   behavior of "DockerContainerFactory"
 
   val defaultUserMemory: ByteSize = 1024.MB
+  val defaultUserCpu: CpuTime = CpuTime(1000)
 
   it should "set the docker run args based on ContainerArgsConfig" in {
 
@@ -127,7 +128,7 @@ class DockerContainerFactoryTests
 
     val factory =
       new DockerContainerFactory(
-        InvokerInstanceId(0, userMemory = defaultUserMemory),
+        InvokerInstanceId(0, userMemory = defaultUserMemory, userCpu = defaultUserCpu),
         Map.empty,
         ContainerArgsConfig(
           "net1",

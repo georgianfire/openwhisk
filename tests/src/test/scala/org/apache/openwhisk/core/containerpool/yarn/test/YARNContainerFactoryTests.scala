@@ -24,7 +24,7 @@ import org.apache.openwhisk.core.WhiskConfig
 import org.apache.openwhisk.core.WhiskConfig._
 import org.apache.openwhisk.core.containerpool.ContainerArgsConfig
 import org.apache.openwhisk.core.entity.ExecManifest.ImageName
-import org.apache.openwhisk.core.entity.{ByteSize, ExecManifest, InvokerInstanceId, SizeUnits}
+import org.apache.openwhisk.core.entity.{ByteSize, CpuTime, ExecManifest, InvokerInstanceId, SizeUnits}
 import org.apache.openwhisk.core.yarn.{YARNConfig, YARNContainerFactory, YARNRESTUtil, YARNTask}
 import org.junit.runner.RunWith
 import org.scalatest.junit.JUnitRunner
@@ -99,8 +99,8 @@ class YARNContainerFactoryTests
       "default",
       "256",
       1)
-  val instance0 = new InvokerInstanceId(0, Some("invoker0"), Some("invoker0"), ByteSize(0, SizeUnits.BYTE))
-  val instance1 = new InvokerInstanceId(1, Some("invoker1"), Some("invoker1"), ByteSize(0, SizeUnits.BYTE))
+  val instance0 = new InvokerInstanceId(0, Some("invoker0"), Some("invoker0"), ByteSize(0, SizeUnits.BYTE), CpuTime(1000))
+  val instance1 = new InvokerInstanceId(1, Some("invoker1"), Some("invoker1"), ByteSize(0, SizeUnits.BYTE), CpuTime(1000))
   val serviceName0 = yarnConfig.serviceName + "-0"
   val serviceName1 = yarnConfig.serviceName + "-1"
   val properties: Map[String, Set[String]] = Map[String, Set[String]]()

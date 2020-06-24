@@ -43,6 +43,7 @@ class AcknowledgementMessageTests extends FlatSpec with Matchers with WhiskInsta
   behavior of "acknowledgement message"
 
   val defaultUserMemory: ByteSize = 1024.MB
+  val defaultUserCpu: CpuTime = CpuTime(milliCpus = 1000)
   val activation = WhiskActivation(
     namespace = EntityPath("ns"),
     name = EntityName("a"),
@@ -76,7 +77,7 @@ class AcknowledgementMessageTests extends FlatSpec with Matchers with WhiskInsta
       TransactionId.testing,
       ActivationId.generate(),
       Some(false),
-      InvokerInstanceId(0, userMemory = defaultUserMemory))
+      InvokerInstanceId(0, userMemory = defaultUserMemory, userCpu = defaultUserCpu))
     m.isSlotFree should not be empty
     m.serialize shouldBe m.toJson.compactPrint
     AcknowledegmentMessage.parse(m.serialize) shouldBe Success(m)
@@ -87,7 +88,7 @@ class AcknowledgementMessageTests extends FlatSpec with Matchers with WhiskInsta
       val c = CombinedCompletionAndResultMessage(
         TransactionId.testing,
         activation,
-        InvokerInstanceId(0, userMemory = defaultUserMemory))
+        InvokerInstanceId(0, userMemory = defaultUserMemory, userCpu = defaultUserCpu))
       c.response shouldBe 'right
       c.isSlotFree should not be empty
       c.isSystemError shouldBe Some(false)
@@ -101,7 +102,7 @@ class AcknowledgementMessageTests extends FlatSpec with Matchers with WhiskInsta
       val c = CombinedCompletionAndResultMessage(
         TransactionId.testing,
         someActivation,
-        InvokerInstanceId(0, userMemory = defaultUserMemory))
+        InvokerInstanceId(0, userMemory = defaultUserMemory, userCpu = defaultUserCpu))
       c.response shouldBe 'right
       c.isSlotFree should not be empty
       c.isSystemError shouldBe Some(true)
@@ -113,7 +114,7 @@ class AcknowledgementMessageTests extends FlatSpec with Matchers with WhiskInsta
       val c = CombinedCompletionAndResultMessage(
         TransactionId.testing,
         activation,
-        InvokerInstanceId(0, userMemory = defaultUserMemory)).shrink
+        InvokerInstanceId(0, userMemory = defaultUserMemory, userCpu = defaultUserCpu)).shrink
       c.response shouldBe 'left
       c.isSlotFree should not be empty
       c.isSystemError shouldBe Some(false)
@@ -127,7 +128,7 @@ class AcknowledgementMessageTests extends FlatSpec with Matchers with WhiskInsta
       val c = CombinedCompletionAndResultMessage(
         TransactionId.testing,
         someActivation,
-        InvokerInstanceId(0, userMemory = defaultUserMemory)).shrink
+        InvokerInstanceId(0, userMemory = defaultUserMemory, userCpu = defaultUserCpu)).shrink
       c.response shouldBe 'left
       c.isSlotFree should not be empty
       c.isSystemError shouldBe Some(true)

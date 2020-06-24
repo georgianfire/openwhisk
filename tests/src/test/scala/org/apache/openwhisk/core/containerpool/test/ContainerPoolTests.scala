@@ -67,6 +67,7 @@ class ContainerPoolTests
   // the values is done properly.
   val exec = CodeExecAsString(RuntimeManifest("actionKind", ImageName("testImage")), "testCode", None)
   val memoryLimit = 256.MB
+  val defaultUserCpu = CpuTime(milliCpus = 1000)
 
   /** Creates a `Run` message */
   def createRunMessage(action: ExecutableWhiskAction, invocationNamespace: EntityName) = {
@@ -125,7 +126,7 @@ class ContainerPoolTests
     (containers, factory)
   }
 
-  def poolConfig(userMemory: ByteSize) = ContainerPoolConfig(userMemory, 0.5, false)
+  def poolConfig(userMemory: ByteSize) = ContainerPoolConfig(defaultUserCpu, userMemory, 0.5, false)
 
   behavior of "ContainerPool"
 

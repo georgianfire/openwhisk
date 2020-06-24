@@ -75,6 +75,7 @@ class InvokerSupervisionTests
 
   val config = new WhiskConfig(ExecManifest.requiredProperties)
   val defaultUserMemory: ByteSize = 1024.MB
+  val defaultUserCpu: CpuTime = CpuTime(milliCpus = 1000)
 
   ExecManifest.initialize(config)
 
@@ -93,7 +94,7 @@ class InvokerSupervisionTests
 
   /** Helper to generate a list of (InstanceId, InvokerState) */
   def zipWithInstance(list: IndexedSeq[InvokerState]) = list.zipWithIndex.map {
-    case (state, index) => new InvokerHealth(InvokerInstanceId(index, userMemory = defaultUserMemory), state)
+    case (state, index) => new InvokerHealth(InvokerInstanceId(index, userMemory = defaultUserMemory, userCpu = defaultUserCpu), state)
   }
 
   val pC = new TestConnector("pingFeedTtest", 4, false) {}
@@ -104,8 +105,8 @@ class InvokerSupervisionTests
     val invoker5 = TestProbe()
     val invoker2 = TestProbe()
 
-    val invoker5Instance = InvokerInstanceId(5, userMemory = defaultUserMemory)
-    val invoker2Instance = InvokerInstanceId(2, userMemory = defaultUserMemory)
+    val invoker5Instance = InvokerInstanceId(5, userMemory = defaultUserMemory, userCpu = defaultUserCpu)
+    val invoker2Instance = InvokerInstanceId(2, userMemory = defaultUserMemory, userCpu = defaultUserCpu)
 
     val children = mutable.Queue(invoker5.ref, invoker2.ref)
     val childFactory = (f: ActorRefFactory, instance: InvokerInstanceId) => children.dequeue()
@@ -146,7 +147,7 @@ class InvokerSupervisionTests
 
   it should "forward the ActivationResult to the appropriate invoker" in {
     val invoker = TestProbe()
-    val invokerInstance = InvokerInstanceId(0, userMemory = defaultUserMemory)
+    val invokerInstance = InvokerInstanceId(0, userMemory = defaultUserMemory, userCpu = defaultUserCpu)
     val invokerName = s"invoker${invokerInstance.toInt}"
     val childFactory = (f: ActorRefFactory, instance: InvokerInstanceId) => invoker.ref
     val sendActivationToInvoker = stubFunction[ActivationMessage, InvokerInstanceId, Future[RecordMetadata]]
@@ -171,7 +172,7 @@ class InvokerSupervisionTests
 
   it should "forward an ActivationMessage to the sendActivation-Method" in {
     val invoker = TestProbe()
-    val invokerInstance = InvokerInstanceId(0, userMemory = defaultUserMemory)
+    val invokerInstance = InvokerInstanceId(0, userMemory = defaultUserMemory, userCpu = defaultUserCpu)
     val invokerName = s"invoker${invokerInstance.toInt}"
     val childFactory = (f: ActorRefFactory, instance: InvokerInstanceId) => invoker.ref
 
@@ -212,7 +213,7 @@ class InvokerSupervisionTests
     val pool = TestProbe()
     val invoker =
       pool.system.actorOf(
-        InvokerActor.props(InvokerInstanceId(0, userMemory = defaultUserMemory), ControllerInstanceId("0")))
+        InvokerActor.props(InvokerInstanceId(0, userMemory = defaultUserMemory, userCpu = defaultUserCpu), ControllerInstanceId("0")))
 
     within(timeout.duration) {
       pool.send(invoker, SubscribeTransitionCallBack(pool.ref))
@@ -220,7 +221,7 @@ class InvokerSupervisionTests
       timeout(invoker)
       pool.expectMsg(Transition(invoker, Unhealthy, Offline))
 
-      invoker ! PingMessage(InvokerInstanceId(0, userMemory = defaultUserMemory))
+      invoker ! PingMessage(InvokerInstanceId(0, userMemory = defaultUserMemory, userCpu = defaultUserCpu))
       pool.expectMsg(Transition(invoker, Offline, Unhealthy))
     }
   }
@@ -230,7 +231,7 @@ class InvokerSupervisionTests
     val pool = TestProbe()
     val invoker =
       pool.system.actorOf(
-        InvokerActor.props(InvokerInstanceId(0, userMemory = defaultUserMemory), ControllerInstanceId("0")))
+        InvokerActor.props(InvokerInstanceId(0, userMemory = defaultUserMemory, userCpu = defaultUserCpu), ControllerInstanceId("0")))
 
     within(timeout.duration) {
       pool.send(invoker, SubscribeTransitionCallBack(pool.ref))
@@ -238,7 +239,7 @@ class InvokerSupervisionTests
 
       (1 to InvokerActor.bufferSize).foreach { _ =>
         invoker ! InvocationFinishedMessage(
-          InvokerInstanceId(0, userMemory = defaultUserMemory),
+          InvokerInstanceId(0, userMemory = defaultUserMemory, userCpu = defaultUserCpu),
           InvocationFinishedResult.Success)
       }
       pool.expectMsg(Transition(invoker, Unhealthy, Healthy))
@@ -246,7 +247,7 @@ class InvokerSupervisionTests
       // Fill buffer with errors
       (1 to InvokerActor.bufferSize).foreach { _ =>
         invoker ! InvocationFinishedMessage(
-          InvokerInstanceId(0, userMemory = defaultUserMemory),
+          InvokerInstanceId(0, userMemory = defaultUserMemory, userCpu = defaultUserCpu),
           InvocationFinishedResult.SystemError)
       }
       pool.expectMsg(Transition(invoker, Healthy, Unhealthy))
@@ -254,7 +255,7 @@ class InvokerSupervisionTests
       // Fill buffer with successful invocations to become healthy again (one below errorTolerance)
       (1 to InvokerActor.bufferSize - InvokerActor.bufferErrorTolerance).foreach { _ =>
         invoker ! InvocationFinishedMessage(
-          InvokerInstanceId(0, userMemory = defaultUserMemory),
+          InvokerInstanceId(0, userMemory = defaultUserMemory, userCpu = defaultUserCpu),
           InvocationFinishedResult.Success)
       }
       pool.expectMsg(Transition(invoker, Unhealthy, Healthy))
@@ -266,7 +267,7 @@ class InvokerSupervisionTests
     val pool = TestProbe()
     val invoker =
       pool.system.actorOf(
-        InvokerActor.props(InvokerInstanceId(0, userMemory = defaultUserMemory), ControllerInstanceId("0")))
+        InvokerActor.props(InvokerInstanceId(0, userMemory = defaultUserMemory, userCpu = defaultUserCpu), ControllerInstanceId("0")))
 
     within(timeout.duration) {
       pool.send(invoker, SubscribeTransitionCallBack(pool.ref))
@@ -274,7 +275,7 @@ class InvokerSupervisionTests
 
       (1 to InvokerActor.bufferSize).foreach { _ =>
         invoker ! InvocationFinishedMessage(
-          InvokerInstanceId(0, userMemory = defaultUserMemory),
+          InvokerInstanceId(0, userMemory = defaultUserMemory, userCpu = defaultUserCpu),
           InvocationFinishedResult.Success)
       }
       pool.expectMsg(Transition(invoker, Unhealthy, Healthy))
@@ -282,7 +283,7 @@ class InvokerSupervisionTests
       // Fill buffer with timeouts
       (1 to InvokerActor.bufferSize).foreach { _ =>
         invoker ! InvocationFinishedMessage(
-          InvokerInstanceId(0, userMemory = defaultUserMemory),
+          InvokerInstanceId(0, userMemory = defaultUserMemory, userCpu = defaultUserCpu),
           InvocationFinishedResult.Timeout)
       }
       pool.expectMsg(Transition(invoker, Healthy, Unresponsive))
@@ -290,7 +291,7 @@ class InvokerSupervisionTests
       // Fill buffer with successful invocations to become healthy again (one below errorTolerance)
       (1 to InvokerActor.bufferSize - InvokerActor.bufferErrorTolerance).foreach { _ =>
         invoker ! InvocationFinishedMessage(
-          InvokerInstanceId(0, userMemory = defaultUserMemory),
+          InvokerInstanceId(0, userMemory = defaultUserMemory, userCpu = defaultUserCpu),
           InvocationFinishedResult.Success)
       }
       pool.expectMsg(Transition(invoker, Unresponsive, Healthy))
@@ -303,7 +304,7 @@ class InvokerSupervisionTests
     val pool = TestProbe()
     val invoker =
       pool.system.actorOf(
-        InvokerActor.props(InvokerInstanceId(0, userMemory = defaultUserMemory), ControllerInstanceId("0")))
+        InvokerActor.props(InvokerInstanceId(0, userMemory = defaultUserMemory, userCpu = defaultUserCpu), ControllerInstanceId("0")))
 
     within(timeout.duration) {
       pool.send(invoker, SubscribeTransitionCallBack(pool.ref))
@@ -312,14 +313,14 @@ class InvokerSupervisionTests
       timeout(invoker)
       pool.expectMsg(Transition(invoker, Unhealthy, Offline))
 
-      invoker ! PingMessage(InvokerInstanceId(0, userMemory = defaultUserMemory))
+      invoker ! PingMessage(InvokerInstanceId(0, userMemory = defaultUserMemory, userCpu = defaultUserCpu))
       pool.expectMsg(Transition(invoker, Offline, Unhealthy))
     }
   }
 
   it should "start timer to send testactions when unhealthy" in {
     val invoker =
-      TestFSMRef(new InvokerActor(InvokerInstanceId(0, userMemory = defaultUserMemory), ControllerInstanceId("0")))
+      TestFSMRef(new InvokerActor(InvokerInstanceId(0, userMemory = defaultUserMemory, userCpu = defaultUserCpu), ControllerInstanceId("0")))
     invoker.stateName shouldBe Unhealthy
 
     invoker.isTimerActive(InvokerActor.timerName) shouldBe true
@@ -327,7 +328,7 @@ class InvokerSupervisionTests
     // Fill buffer with successful invocations to become healthy again (one below errorTolerance)
     (1 to InvokerActor.bufferSize - InvokerActor.bufferErrorTolerance).foreach { _ =>
       invoker ! InvocationFinishedMessage(
-        InvokerInstanceId(0, userMemory = defaultUserMemory),
+        InvokerInstanceId(0, userMemory = defaultUserMemory, userCpu = defaultUserCpu),
         InvocationFinishedResult.Success)
     }
     invoker.stateName shouldBe Healthy
@@ -344,7 +345,7 @@ class InvokerSupervisionTests
     val sendActivationToInvoker = stubFunction[ActivationMessage, InvokerInstanceId, Future[RecordMetadata]]
     val supervisor = system.actorOf(InvokerPool.props(childFactory, sendActivationToInvoker, pC))
 
-    val invokerInstance = InvokerInstanceId(0, Some("10.x.x.x"), Some("invoker-xyz"), userMemory = defaultUserMemory)
+    val invokerInstance = InvokerInstanceId(0, Some("10.x.x.x"), Some("invoker-xyz"), userMemory = defaultUserMemory, userCpu = defaultUserCpu)
 
     within(timeout.duration) {
 
@@ -367,10 +368,10 @@ class InvokerSupervisionTests
     val sendActivationToInvoker = stubFunction[ActivationMessage, InvokerInstanceId, Future[RecordMetadata]]
     val supervisor = system.actorOf(InvokerPool.props(childFactory, sendActivationToInvoker, pC))
 
-    val invokerInstance = InvokerInstanceId(0, Some("10.x.x.x"), Some("invoker-xyz"), userMemory = defaultUserMemory)
+    val invokerInstance = InvokerInstanceId(0, Some("10.x.x.x"), Some("invoker-xyz"), userMemory = defaultUserMemory, userCpu = defaultUserCpu)
 
     val invokerAfterRestart =
-      InvokerInstanceId(0, Some("10.x.x.x"), Some("invoker-zyx"), userMemory = defaultUserMemory)
+      InvokerInstanceId(0, Some("10.x.x.x"), Some("invoker-zyx"), userMemory = defaultUserMemory, userCpu = defaultUserCpu)
 
     within(timeout.duration) {
       val ping = PingMessage(invokerInstance)

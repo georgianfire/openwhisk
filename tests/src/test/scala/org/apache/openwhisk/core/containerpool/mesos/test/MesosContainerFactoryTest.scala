@@ -52,6 +52,7 @@ import org.apache.openwhisk.core.WhiskConfig._
 import org.apache.openwhisk.core.containerpool.ContainerArgsConfig
 import org.apache.openwhisk.core.containerpool.ContainerPoolConfig
 import org.apache.openwhisk.core.containerpool.logging.DockerToActivationLogStore
+import org.apache.openwhisk.core.entity.CpuTime
 import org.apache.openwhisk.core.entity.ExecManifest.ImageName
 import org.apache.openwhisk.core.entity.size._
 import org.apache.openwhisk.core.mesos.MesosConfig
@@ -84,7 +85,7 @@ class MesosContainerFactoryTest
   }
 
   // 80 slots, each 265MB
-  val poolConfig = ContainerPoolConfig(21200.MB, 0.5, false)
+  val poolConfig = ContainerPoolConfig(CpuTime(2000), 21200.MB, 0.5, false)
   val actionMemory = 265.MB
   val mesosCpus = poolConfig.cpuShare(actionMemory) / 1024.0
 
