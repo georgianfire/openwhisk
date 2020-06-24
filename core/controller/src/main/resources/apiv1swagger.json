@@ -1797,6 +1797,12 @@
           "format": "int32",
           "description": "weight of the action",
           "default": 8
+        },
+        "cpu": {
+          "type": "integer",
+          "format": "int32",
+          "description": "cpu in millicpus",
+          "default": 200
         }
       }
     },

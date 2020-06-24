@@ -33,7 +33,7 @@ import scala.util.Try
 import common.TestUtils._
 import spray.json.JsObject
 import spray.json.JsValue
-import org.apache.openwhisk.core.entity.ByteSize
+import org.apache.openwhisk.core.entity.{ByteSize, CpuTime}
 import org.apache.openwhisk.utils.retry
 
 import FullyQualifiedNames.fqn
@@ -206,8 +206,9 @@ class CliActionOperations(override val wsk: RunCliCmd)
     web: Option[String] = None,
     websecure: Option[String] = None,
     expectedExitCode: Int = SUCCESS_EXIT,
-    weight: Option[Int] = None)(implicit wp: WskProps): RunResult = {
-    // Note that the weight setting is not yet implemented since that requires modifying the openwhisk cli
+    weight: Option[Int] = None,
+    cpu: Option[CpuTime] = None)(implicit wp: WskProps): RunResult = {
+    // Note that the weight and cpu settings are not yet implemented since that requires modifying the openwhisk cli
     val params = Seq(noun, if (!update) "create" else "update", "--auth", wp.authKey, fqn(name)) ++ {
       artifact map { Seq(_) } getOrElse Seq.empty
     } ++ {

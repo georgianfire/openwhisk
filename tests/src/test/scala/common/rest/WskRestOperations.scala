@@ -48,7 +48,7 @@ import javax.net.ssl._
 import org.apache.commons.io.{FileUtils, FilenameUtils}
 import org.apache.openwhisk.common.Https.HttpsConfig
 import org.apache.openwhisk.common.{AkkaLogging, TransactionId}
-import org.apache.openwhisk.core.entity.ByteSize
+import org.apache.openwhisk.core.entity.{ByteSize, CpuTime}
 import org.apache.openwhisk.utils.retry
 import org.scalatest.Matchers
 import org.scalatest.concurrent.ScalaFutures
@@ -275,7 +275,8 @@ class RestActionOperations(implicit val actorSystem: ActorSystem)
     web: Option[String] = None,
     websecure: Option[String] = None,
     expectedExitCode: Int = OK.intValue,
-    weight: Option[Int] = None)(implicit wp: WskProps): RestResult = {
+    weight: Option[Int] = None,
+    cpu: Option[CpuTime] = None)(implicit wp: WskProps): RestResult = {
 
     val (namespace, actionName) = getNamespaceEntityName(name)
     val (paramsInput, annosInput) = getParamsAnnos(parameters, annotations, parameterFile, annotationFile, web = web)
@@ -347,7 +348,8 @@ class RestActionOperations(implicit val actorSystem: ActorSystem)
         logsize.map(log => Map("logs" -> log.toMB.toJson)).getOrElse(Map.empty) ++
         memory.map(m => Map("memory" -> m.toMB.toJson)).getOrElse(Map.empty) ++
         concurrency.map(c => Map("concurrency" -> c.toJson)).getOrElse(Map.empty) ++
-        weight.map(w => Map("weight" -> w.toJson)).getOrElse(Map.empty)
+        weight.map(w => Map("weight" -> w.toJson)).getOrElse(Map.empty) ++
+        cpu.map(c => Map("cpu" -> c.toJson)).getOrElse(Map.empty)
     }
 
     val body: Map[String, JsValue] = if (!update) {

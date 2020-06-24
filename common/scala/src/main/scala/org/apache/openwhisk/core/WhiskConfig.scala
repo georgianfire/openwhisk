@@ -210,6 +210,7 @@ object ConfigKeys {
   val logLimit = "whisk.log-limit"
   val concurrencyLimit = "whisk.concurrency-limit"
   val weight = "whisk.weight"
+  val cpu = "whisk.cpu"
   val activation = "whisk.activation"
   val userEvents = "whisk.user-events"
 

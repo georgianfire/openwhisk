@@ -51,7 +51,8 @@ protected[core] case class ActionLimits(timeout: TimeLimit = TimeLimit(),
                                         memory: MemoryLimit = MemoryLimit(),
                                         logs: LogLimit = LogLimit(),
                                         concurrency: ConcurrencyLimit = ConcurrencyLimit(),
-                                        weight: Weight = Weight())
+                                        weight: Weight = Weight(),
+                                        cpu: CpuLimit = CpuLimit())
     extends Limits {
   override protected[entity] def toJson = ActionLimits.serdes.write(this)
 }
@@ -66,7 +67,7 @@ protected[core] case class TriggerLimits protected[core] () extends Limits {
 protected[core] object ActionLimits extends ArgNormalizer[ActionLimits] with DefaultJsonProtocol {
 
   override protected[core] implicit val serdes = new RootJsonFormat[ActionLimits] {
-    val helper = jsonFormat5(ActionLimits.apply)
+    val helper = jsonFormat6(ActionLimits.apply)
 
     def read(value: JsValue) = {
       val obj = Try {
@@ -78,8 +79,9 @@ protected[core] object ActionLimits extends ArgNormalizer[ActionLimits] with Def
       val logs = obj.get("logs") map { LogLimit.serdes.read(_) } getOrElse LogLimit()
       val concurrency = obj.get("concurrency") map { ConcurrencyLimit.serdes.read(_) } getOrElse ConcurrencyLimit()
       val weight = obj.get("weight").map {Weight.serdes.read} getOrElse Weight()
+      val cpu = obj.get("cpu").map(CpuLimit.serdes.read) getOrElse CpuLimit()
 
-      ActionLimits(time, memory, logs, concurrency, weight)
+      ActionLimits(time, memory, logs, concurrency, weight, cpu)
     }
 
     def write(a: ActionLimits) = helper.write(a)

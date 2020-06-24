@@ -44,7 +44,8 @@ case class ActionLimitsOption(timeout: Option[TimeLimit],
                               memory: Option[MemoryLimit],
                               logs: Option[LogLimit],
                               concurrency: Option[ConcurrencyLimit],
-                              weight: Option[Weight])
+                              weight: Option[Weight],
+                              cpu: Option[CpuLimit])
 
 /**
  * WhiskActionPut is a restricted WhiskAction view that eschews properties
@@ -640,7 +641,7 @@ object WhiskActionMetaData
 }
 
 object ActionLimitsOption extends DefaultJsonProtocol {
-  implicit val serdes = jsonFormat5(ActionLimitsOption.apply)
+  implicit val serdes = jsonFormat6(ActionLimitsOption.apply)
 }
 
 object WhiskActionPut extends DefaultJsonProtocol {

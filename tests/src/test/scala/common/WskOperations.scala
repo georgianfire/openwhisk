@@ -27,7 +27,7 @@ import scala.concurrent.duration.Duration
 import scala.language.postfixOps
 import TestUtils._
 import spray.json._
-import org.apache.openwhisk.core.entity.ByteSize
+import org.apache.openwhisk.core.entity.{ByteSize, CpuTime}
 
 import scala.util.Try
 
@@ -245,7 +245,8 @@ trait ActionOperations extends DeleteFromCollectionOperations with ListOrGetFrom
              web: Option[String] = None,
              websecure: Option[String] = None,
              expectedExitCode: Int = SUCCESS_EXIT,
-             weight: Option[Int] = None)(implicit wp: WskProps): RunResult
+             weight: Option[Int] = None,
+             cpu: Option[CpuTime] = None)(implicit wp: WskProps): RunResult
 
   def invoke(name: String,
              parameters: Map[String, JsValue] = Map.empty,
