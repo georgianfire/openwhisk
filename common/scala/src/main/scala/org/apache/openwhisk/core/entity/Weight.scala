@@ -18,9 +18,9 @@ object Weight {
   protected[core] val MAX_WEIGHT: Int = config.max
   protected[core] val STD_WEIGHT: Int = config.std
 
-  val defaultWeightValue = 8
+  protected[core] val standardWeight: Weight = Weight(STD_WEIGHT)
 
-  def apply(): Weight = Weight(STD_WEIGHT)
+  def apply(): Weight = standardWeight
 
   implicit val serdes: RootJsonFormat[Weight] = new RootJsonFormat[Weight] {
     override def read(json: JsValue): Weight = json match {
