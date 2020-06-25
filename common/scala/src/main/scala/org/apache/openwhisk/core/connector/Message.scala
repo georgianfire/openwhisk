@@ -26,7 +26,6 @@ import scala.concurrent.duration._
 import akka.http.scaladsl.model.StatusCodes._
 import java.util.concurrent.TimeUnit
 
-import org.apache.openwhisk.core.containerpool.ContainerId
 import org.apache.openwhisk.core.entity.ActivationResponse.{statusForCode, ERROR_FIELD}
 import org.apache.openwhisk.utils.JsHelpers
 
@@ -60,7 +59,8 @@ case class ActivationMessage(override val transid: TransactionId,
                              initArgs: Set[String] = Set.empty,
                              cause: Option[ActivationId] = None,
                              traceContext: Option[Map[String, String]] = None,
-                             containerInfo: Option[Either[ContainerId, (ByteSize, CpuTime)]] = None)
+                             containerId: Option[String] = None,
+                             coldStartSize: Option[(ByteSize, CpuTime)] = None)
     extends Message {
 
   override def serialize = ActivationMessage.serdes.write(this).compactPrint
@@ -173,10 +173,9 @@ object ActivationMessage extends DefaultJsonProtocol {
   def parse(msg: String) = Try(serdes.read(msg.parseJson))
 
   private implicit val fqnSerdes = FullyQualifiedEntityName.serdes
-  private implicit val cidSerdes = jsonFormat1(ContainerId)
   import size.{serdes => memorySerdes}
   import CpuTime.{serdes => cpuSerdes}
-  implicit val serdes = jsonFormat12(ActivationMessage.apply)
+  implicit val serdes = jsonFormat13(ActivationMessage.apply)
 }
 
 object CombinedCompletionAndResultMessage extends DefaultJsonProtocol {
@@ -433,9 +432,7 @@ object EventMessage extends DefaultJsonProtocol {
 }
 
 case class ContainerOperationMessage(operation: ContainerOperationMessage.Operation,
-                                     containerId: Option[ContainerId] = None,
-                                     memory: Option[ByteSize] = None,
-                                     cpu: Option[CpuTime] = None) extends Message {
+                                     containerId: String) extends Message {
   override def serialize: String = ContainerOperationMessage.format.write(this).compactPrint
 }
 
@@ -475,11 +472,8 @@ object ContainerOperationMessage extends DefaultJsonProtocol {
     override def write(obj: Operation): JsValue = JsString(obj.value)
   }
 
-  implicit private val containerIdSerdes = jsonFormat1(ContainerId)
-  import size.{serdes => memorySerdes}
-
   implicit val format: RootJsonFormat[ContainerOperationMessage] =
-    jsonFormat(ContainerOperationMessage.apply, "operation", "containerId", "memory", "cpu")
+    jsonFormat(ContainerOperationMessage.apply, "operation", "containerId")
 
   def parse(msg: String): Try[ContainerOperationMessage] = Try(format.read(msg.parseJson))
 }

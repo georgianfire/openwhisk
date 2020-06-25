@@ -3,7 +3,7 @@ package org.apache.openwhisk.core.containerpool.kubernetes
 import akka.actor.{Actor, ActorRef, ActorRefFactory, Props}
 import org.apache.openwhisk.common.{AkkaLogging, Logging, LoggingMarkers, MetricEmitter}
 import org.apache.openwhisk.core.connector.ActivationMessage
-import org.apache.openwhisk.core.containerpool.{ContainerId, ContainerRemoved, Remove, Run, RunWithSize}
+import org.apache.openwhisk.core.containerpool.{ContainerRemoved, Remove, Run, RunWithSize}
 import org.apache.openwhisk.core.entity.{ByteSize, CpuLimit, CpuTime, ExecutableWhiskAction, MemoryLimit}
 
 import scala.collection.immutable
@@ -31,10 +31,11 @@ object ActionExecutionMessage {
 
   case class RunOnContainer(action: ExecutableWhiskAction,
                             msg: ActivationMessage,
-                            containerId: ContainerId) extends ActionExecutionMessage
+                            containerId: String) extends ActionExecutionMessage
 
   case class RunOnNewContainerWithSize(action: ExecutableWhiskAction,
                                        msg: ActivationMessage,
+                                       containerId: String,
                                        memory: ByteSize,
                                        cpu: CpuTime) extends ActionExecutionMessage
 }
@@ -43,8 +44,7 @@ class EdgeContainerPool(containerFactory: ActorRefFactory => ActorRef) extends A
   implicit val logging: Logging = new AkkaLogging(context.system.log)
   implicit val executionContext: ExecutionContext = context.dispatcher
 
-  var pool = immutable.Map.empty[ContainerId, ActorRef]
-  var containerDataByRef = immutable.Map.empty[ActorRef, EdgeContainerData]
+  var pool = immutable.Map.empty[String, ActorRef]
 
   override def receive: Receive = {
     case op: EdgeContainerOperationMessage => {
@@ -68,26 +68,22 @@ class EdgeContainerPool(containerFactory: ActorRefFactory => ActorRef) extends A
           val ephemeralContainer = containerFactory(context)
           ephemeralContainer ! RunWithSize(action, msg, MemoryLimit.MIN_MEMORY, CpuLimit.MIN_CPU)
           ephemeralContainer ! Remove
-          containerDataByRef = containerDataByRef.updated(ephemeralContainer, EdgeContainerData(isEphermal=true))
 
         case RunOnContainer(action, msg, containerId) =>
           assert(pool.contains(containerId))
           val container = pool(containerId)
           container ! Run(action, msg)
 
-        case RunOnNewContainerWithSize(action, msg, memory, cpu) =>
+        case RunOnNewContainerWithSize(action, msg, containerId, memory, cpu) =>
           val container = containerFactory(context)
+          assert(!pool.contains(containerId))
+          pool = pool.updated(containerId, container)
           container ! RunWithSize(action, msg, memory, cpu)
       }
     }
 
     case ContainerRemoved =>
-      val containerData = containerDataByRef(sender())
-      if (containerData.isEphermal) {
-        logging.info(this, "Emphermal container removed.")
-        containerDataByRef = containerDataByRef - sender()
-      }
-      else ???
+      logging.info(this, "Container removed")
 
     case unknownMessage => logging.error(this, s"Received unknown message: $unknownMessage")
   }

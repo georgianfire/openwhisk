@@ -7,7 +7,6 @@ import org.apache.openwhisk.common.{Logging, TransactionId}
 import org.apache.openwhisk.core.WhiskConfig
 import org.apache.openwhisk.core.WhiskConfig._
 import org.apache.openwhisk.core.connector.{ActivationMessage, MessageProducer, MessagingProvider}
-import org.apache.openwhisk.core.containerpool.ContainerId
 import org.apache.openwhisk.core.entity._
 import org.apache.openwhisk.core.entity.size._
 import org.apache.openwhisk.spi.SpiLoader
@@ -75,20 +74,40 @@ class EdgeBalancer(
     logging.info(this, s"User: ${msg.user.namespace.name.asString} with weight ${msg.user.limits.weight}")
     logging.info(this, s"Action: ${action.name.asString} with weight: ${action.limits.weight}")
 
-    EdgeBalancer.schedule(msg.action, EdgeBalancerStateSingleton).map{ containerInfo =>
+    EdgeBalancer.schedule(msg.user.namespace, msg.action, EdgeBalancerStateSingleton).map{ containerInfo =>
       val invoker = containerInfo.invoker
-      val msgWithContainerId = msg.copy(containerInfo = Some(Left(containerInfo.id)))
+      val msgWithContainerId = msg.copy(containerId = Some(containerInfo.id))
       val activationResult = setupActivation(msgWithContainerId, action, invoker)
       sendActivationToInvoker(messageProducer, msgWithContainerId, invoker).map(_ => activationResult)
     }.getOrElse {
       // TODO: This should be due to the action has no running containers.
       // Create one container and schedule to it.
       val invoker = EdgeBalancerStateSingleton.invokers.head.id
+      val containerId = UUID().asString
       val memory = action.limits.memory.megabytes.MB
       val cpu = action.limits.cpu.cpuTime
-      val msgWithNewContainerSize = msg.copy(containerInfo = Some(Right(memory, cpu)))
-      val activationResult = setupActivation(msgWithNewContainerSize, action, invoker)
-      sendActivationToInvoker(messageProducer, msgWithNewContainerSize, invoker).map(_ => activationResult)
+
+      val coldStartMsg = msg.copy(containerId = Some(containerId), coldStartSize = Some((memory, cpu)))
+      val activationResult = setupActivation(coldStartMsg, action, invoker)
+      sendActivationToInvoker(messageProducer, coldStartMsg, invoker)map { _ =>
+        addContainer(msg.user.namespace, msg.action, ContainerInfo(containerId, invoker, memory, cpu))
+        activationResult
+      }
+    }
+  }
+
+  def addContainer(user: Namespace, action: FullyQualifiedEntityName, containerInfo: ContainerInfo): Future[Unit] = {
+    Future {
+      var updated = false
+      while (!updated) {
+        EdgeBalancerStateSingleton.getContainers(user, action) match {
+          case Some(oldContainers) =>
+            updated = EdgeBalancerStateSingleton.compareAndSetContainers(user, action, oldContainers, oldContainers :+ containerInfo)
+          case None =>
+            updated = EdgeBalancerStateSingleton.putIfAbsent(user, action, IndexedSeq(containerInfo))
+        }
+      }
+      logging.info(this, s"Added container with ${containerInfo.memory} memory and ${containerInfo.cpu} cpu for action $user/$action")
     }
   }
 
@@ -150,12 +169,12 @@ object EdgeBalancer extends LoadBalancerProvider {
       invokerPoolFactory)
   }
 
-  def schedule(action: FullyQualifiedEntityName,
+  def schedule(user: Namespace,
+               action: FullyQualifiedEntityName,
                edgeBalancerState: EdgeBalancerState)(implicit random: Random): Option[ContainerInfo] = {
-    edgeBalancerState.getContainers(action).flatMap { containers =>
-      val availableContainers = containers.filter(_.state == ContainerState.Running)
-      val weights = availableContainers.map(_.weight)
-      weightedRandomChoice(availableContainers.zip(weights))
+    edgeBalancerState.getContainers(user, action).flatMap { containers =>
+      val weights = containers.map(_.weight)
+      weightedRandomChoice(containers.zip(weights))
     }
   }
 
@@ -190,43 +209,48 @@ trait EdgeBalancerState {
 
   def updateInvokers(newInvokers: IndexedSeq[InvokerHealth]): Unit
 
-  def getContainers(action: FullyQualifiedEntityName): Option[IndexedSeq[ContainerInfo]]
+  def getContainers(user: Namespace, action: FullyQualifiedEntityName): Option[IndexedSeq[ContainerInfo]]
 
-  def compareAndSetContainers(action: FullyQualifiedEntityName,
+  def compareAndSetContainers(user: Namespace,
+                              action: FullyQualifiedEntityName,
                               expected: IndexedSeq[ContainerInfo],
                               newContainers: IndexedSeq[ContainerInfo]): Boolean
+
+  def putIfAbsent(user: Namespace,
+                  action: FullyQualifiedEntityName,
+                  newContainers: IndexedSeq[ContainerInfo]): Boolean
 }
 
 object EdgeBalancerStateSingleton extends EdgeBalancerState {
   private var _invokers: IndexedSeq[InvokerHealth] = IndexedSeq.empty
 
-  private val _containersPerAction: collection.concurrent.Map[FullyQualifiedEntityName, IndexedSeq[ContainerInfo]] =
+  private val _containersPerAction: collection.concurrent.Map[(Namespace, FullyQualifiedEntityName), IndexedSeq[ContainerInfo]] =
     collection.concurrent.TrieMap.empty
 
   override def invokers: IndexedSeq[InvokerHealth] = _invokers
 
   override def updateInvokers(newInvokers: IndexedSeq[InvokerHealth]): Unit = this._invokers = newInvokers
 
-  override def getContainers(action: FullyQualifiedEntityName): Option[IndexedSeq[ContainerInfo]] =
-    this._containersPerAction.get(action)
+  override def getContainers(user: Namespace, action: FullyQualifiedEntityName): Option[IndexedSeq[ContainerInfo]] =
+    this._containersPerAction get (user, action)
 
-  override def compareAndSetContainers(action: FullyQualifiedEntityName,
+  override def compareAndSetContainers(user: Namespace,
+                                       action: FullyQualifiedEntityName,
                                        expected: IndexedSeq[ContainerInfo],
                                        newContainers: IndexedSeq[ContainerInfo]): Boolean = {
-    this._containersPerAction.replace(action, expected, newContainers)
+    this._containersPerAction.replace((user, action), expected, newContainers)
   }
-}
 
-sealed trait ContainerState
-
-object ContainerState {
-  object Running extends ContainerState
-
-  object Terminating extends ContainerState
+  override def putIfAbsent(user: Namespace,
+                           action: FullyQualifiedEntityName,
+                           newContainers: IndexedSeq[ContainerInfo]): Boolean =
+    this._containersPerAction.putIfAbsent((user, action), newContainers).isEmpty
 }
 
 case class ContainerInfo(
-  id: ContainerId,
+  id: String,
   invoker: InvokerInstanceId,
-  state: ContainerState,
-  weight: Int)
+  memory: ByteSize,
+  cpu: CpuTime) {
+  def weight = cpu.milliCpus
+}

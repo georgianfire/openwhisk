@@ -7,7 +7,7 @@ import akka.event.Logging.InfoLevel
 import org.apache.openwhisk.common.tracing.WhiskTracerProvider
 import org.apache.openwhisk.common.{Logging, LoggingMarkers, TransactionId}
 import org.apache.openwhisk.core.connector.{ActivationMessage, CombinedCompletionAndResultMessage, ContainerOperationMessage, MessageFeed, MessageProducer}
-import org.apache.openwhisk.core.containerpool.kubernetes.ActionExecutionMessage.{RunOnNewContainerWithSize, RunWithEphemeralContainer}
+import org.apache.openwhisk.core.containerpool.kubernetes.ActionExecutionMessage.{RunOnContainer, RunOnNewContainerWithSize, RunWithEphemeralContainer}
 import org.apache.openwhisk.core.containerpool.kubernetes.EdgeContainerPool
 import org.apache.openwhisk.core.containerpool.{ContainerPoolConfig, ContainerProxy}
 import org.apache.openwhisk.core.database.{DocumentTypeMismatchException, DocumentUnreadable, NoDocumentException, UserContext}
@@ -56,7 +56,7 @@ class EdgeInvoker(whiskConfig: WhiskConfig,
       .flatMap { msg: ActivationMessage =>
         implicit val transid: TransactionId = msg.transid
 
-        logging.info(this, s"${msg.user.namespace.name} ${msg.containerInfo}")
+        logging.info(this, s"${msg.user.namespace.name} ${msg.containerId}")
 
         // Set trace context to continue tracing
         WhiskTracerProvider.tracer.setTraceContext(transid, msg.traceContext)
@@ -81,9 +81,10 @@ class EdgeInvoker(whiskConfig: WhiskConfig,
                 case Some(executable) =>
                   // This is a user action and the target container should be specified
                   if (msg.user.namespace.name.asString != systemNamespace) {
-                    msg.containerInfo.get match {
-                      case Left(containerId) => Future.failed(new NotImplementedError())
-                      case Right((memory, cpu)) => pool ! RunOnNewContainerWithSize(executable, msg, memory, cpu)
+                    val containerId = msg.containerId.get
+                    msg.coldStartSize match {
+                      case Some((memory, cpu)) => pool ! RunOnNewContainerWithSize(executable, msg, containerId, memory, cpu)
+                      case None => pool ! RunOnContainer(executable, msg, containerId)
                     }
                   } else {
                     pool ! RunWithEphemeralContainer(executable, msg)
