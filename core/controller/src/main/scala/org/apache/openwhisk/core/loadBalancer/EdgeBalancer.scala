@@ -65,7 +65,9 @@ class EdgeBalancer(
     Some(monitor)
   )
 
-  override def releaseInvoker(invoker: InvokerInstanceId, entry: ActivationEntry): Unit = ???
+  override def releaseInvoker(invoker: InvokerInstanceId, entry: ActivationEntry): Unit = {
+
+  }
 
   override def invokerHealth(): Future[IndexedSeq[InvokerHealth]] = Future.successful(EdgeBalancerStateSingleton.invokers)
 
@@ -76,7 +78,7 @@ class EdgeBalancer(
 
     EdgeBalancer.schedule(msg.user.namespace, msg.action, EdgeBalancerStateSingleton).map{ containerInfo =>
       val invoker = containerInfo.invoker
-      val msgWithContainerId = msg.copy(containerId = Some(containerInfo.id))
+      val msgWithContainerId = msg.copy(containerId = Some(containerInfo.id), size=Some((containerInfo.memory, containerInfo.cpu)))
       val activationResult = setupActivation(msgWithContainerId, action, invoker)
       sendActivationToInvoker(messageProducer, msgWithContainerId, invoker).map(_ => activationResult)
     }.getOrElse {
@@ -87,7 +89,7 @@ class EdgeBalancer(
       val memory = action.limits.memory.megabytes.MB
       val cpu = action.limits.cpu.cpuTime
 
-      val coldStartMsg = msg.copy(containerId = Some(containerId), coldStartSize = Some((memory, cpu)))
+      val coldStartMsg = msg.copy(containerId = Some(containerId), size = Some((memory, cpu)))
       val activationResult = setupActivation(coldStartMsg, action, invoker)
       sendActivationToInvoker(messageProducer, coldStartMsg, invoker)map { _ =>
         addContainer(msg.user.namespace, msg.action, ContainerInfo(containerId, invoker, memory, cpu))

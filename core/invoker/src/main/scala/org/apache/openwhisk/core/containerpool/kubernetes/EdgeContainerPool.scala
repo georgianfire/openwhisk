@@ -2,7 +2,7 @@ package org.apache.openwhisk.core.containerpool.kubernetes
 
 import akka.actor.{Actor, ActorRef, ActorRefFactory, Props}
 import org.apache.openwhisk.common.{AkkaLogging, Logging, LoggingMarkers, MetricEmitter}
-import org.apache.openwhisk.core.connector.ActivationMessage
+import org.apache.openwhisk.core.connector.{ActivationMessage, MessageFeed}
 import org.apache.openwhisk.core.containerpool.{ContainerRemoved, Remove, Run, RunWithSize}
 import org.apache.openwhisk.core.entity.{ByteSize, CpuLimit, CpuTime, ExecutableWhiskAction, MemoryLimit}
 
@@ -29,18 +29,15 @@ object ActionExecutionMessage {
   case class RunWithEphemeralContainer(action: ExecutableWhiskAction,
                                        msg: ActivationMessage) extends ActionExecutionMessage
 
-  case class RunOnContainer(action: ExecutableWhiskAction,
-                            msg: ActivationMessage,
-                            containerId: String) extends ActionExecutionMessage
-
-  case class RunOnNewContainerWithSize(action: ExecutableWhiskAction,
+  case class RunOnContainerWithSize(action: ExecutableWhiskAction,
                                        msg: ActivationMessage,
                                        containerId: String,
                                        memory: ByteSize,
                                        cpu: CpuTime) extends ActionExecutionMessage
 }
 
-class EdgeContainerPool(containerFactory: ActorRefFactory => ActorRef) extends Actor {
+class EdgeContainerPool(containerFactory: ActorRefFactory => ActorRef,
+                        activationFeed: ActorRef) extends Actor {
   implicit val logging: Logging = new AkkaLogging(context.system.log)
   implicit val executionContext: ExecutionContext = context.dispatcher
 
@@ -69,17 +66,20 @@ class EdgeContainerPool(containerFactory: ActorRefFactory => ActorRef) extends A
           ephemeralContainer ! RunWithSize(action, msg, MemoryLimit.MIN_MEMORY, CpuLimit.MIN_CPU)
           ephemeralContainer ! Remove
 
-        case RunOnContainer(action, msg, containerId) =>
-          assert(pool.contains(containerId))
-          val container = pool(containerId)
-          container ! Run(action, msg)
-
-        case RunOnNewContainerWithSize(action, msg, containerId, memory, cpu) =>
-          val container = containerFactory(context)
-          assert(!pool.contains(containerId))
-          pool = pool.updated(containerId, container)
-          container ! RunWithSize(action, msg, memory, cpu)
+        case RunOnContainerWithSize(action, msg, containerId, memory, cpu) =>
+          if (pool contains containerId) {
+              logging.info(this, s"scheduling to container $containerId")
+              val container = pool(containerId)
+              container ! Run(action, msg)
+          } else {
+              logging.info(this, s"cold starting container $containerId")
+              val container = containerFactory(context)
+              pool = pool.updated(containerId, container)
+              container ! RunWithSize(action, msg, memory, cpu)
+          }
       }
+
+      activationFeed ! MessageFeed.Processed
     }
 
     case ContainerRemoved =>
@@ -96,5 +96,5 @@ class EdgeContainerPool(containerFactory: ActorRefFactory => ActorRef) extends A
 }
 
 object EdgeContainerPool {
-  def props(factory: ActorRefFactory => ActorRef) = Props(new EdgeContainerPool(factory))
+  def props(factory: ActorRefFactory => ActorRef, activationFeed: ActorRef) = Props(new EdgeContainerPool(factory, activationFeed))
 }

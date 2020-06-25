@@ -38,13 +38,12 @@ import akka.stream.ActorMaterializer
 import java.net.InetSocketAddress
 import java.net.SocketException
 
-import org.apache.openwhisk.common.MetricEmitter
+import org.apache.openwhisk.common.{AkkaLogging, Counter, LoggingMarkers, MetricEmitter, TransactionId}
 import org.apache.openwhisk.common.TransactionId.systemPrefix
 
 import scala.collection.immutable
 import spray.json.DefaultJsonProtocol._
 import spray.json._
-import org.apache.openwhisk.common.{AkkaLogging, Counter, LoggingMarkers, TransactionId}
 import org.apache.openwhisk.core.ConfigKeys
 import org.apache.openwhisk.core.ack.ActiveAck
 import org.apache.openwhisk.core.connector.{ActivationMessage, CombinedCompletionAndResultMessage, CompletionMessage, ResultMessage}
@@ -192,7 +191,10 @@ case class WarmedData(override val container: Container,
 // Events received by the actor
 sealed abstract class AbstractStart(val exec: CodeExec[_])
 case class Start(override val exec: CodeExec[_], memoryLimit: ByteSize) extends AbstractStart(exec)
-sealed abstract class AbstractRun(val action: ExecutableWhiskAction, val msg: ActivationMessage)
+sealed abstract class AbstractRun(val action: ExecutableWhiskAction, val msg: ActivationMessage) {
+  val queueingStart: Instant = Instant.now()
+  var queueingEnd: Instant = Instant.now()
+}
 case class Run(override val action: ExecutableWhiskAction,
                override val msg: ActivationMessage,
                retryLogDeadline: Option[Deadline] = None) extends AbstractRun(action, msg)
@@ -329,25 +331,24 @@ class ContainerProxy(factory: (TransactionId,
       // create a new container
       val container =
         job match {
-          case Run(action, msg, _) => factory(
-            msg.transid,
-            ContainerProxy.containerName(instance, msg.user.namespace.name.asString, action.name.asString),
-            action.exec.image,
-            action.exec.pull,
-            action.limits.memory.megabytes.MB,
-            poolConfig.cpuShare(action.limits.memory.megabytes.MB),
-            Some(action))
+          case Run(action, msg, _) =>
+            factory(msg.transid,
+                    ContainerProxy.containerName(instance, msg.user.namespace.name.asString, action.name.asString),
+                    action.exec.image,
+                    action.exec.pull,
+                    action.limits.memory.megabytes.MB,
+                    poolConfig.cpuShare(action.limits.memory.megabytes.MB),
+                    Some(action))
 
           case RunWithSize(action, msg, memory, cpu) =>
             val factory = factoryWithFixedSize.get
-            factory(
-              msg.transid,
-              ContainerProxy.containerName(instance, msg.user.namespace.name.asString, action.name.asString),
-              action.exec.image,
-              action.exec.pull,
-              memory,
-              cpu,
-              Some(action)
+            factory(msg.transid,
+                    ContainerProxy.containerName(instance, msg.user.namespace.name.asString, action.name.asString),
+                    action.exec.image,
+                    action.exec.pull,
+                    memory,
+                    cpu,
+                    Some(action)
             )
         }
 
@@ -644,6 +645,7 @@ class ContainerProxy(factory: (TransactionId,
     1 to available foreach { _ =>
       runBuffer.dequeueOption match {
         case Some((run, q)) =>
+          run.queueingEnd = Instant.now()
           self ! run
           bufferProcessing = true
           runBuffer = q
@@ -991,6 +993,11 @@ object ContainerProxy {
                                totalInterval: Interval,
                                isTimeout: Boolean,
                                response: ActivationResponse) = {
+    val queueing = Parameters(
+        WhiskActivation.queueingTimeannotation,
+        Interval(job.queueingStart, job.queueingEnd).duration.toMillis.toJson)
+
+
     val causedBy = Some {
       if (job.msg.causedBySequence) {
         Parameters(WhiskActivation.causedByAnnotation, JsString(Exec.SEQUENCE))
@@ -1031,7 +1038,7 @@ object ContainerProxy {
           Parameters(WhiskActivation.pathAnnotation, JsString(job.action.fullyQualifiedName(false).asString)) ++
           Parameters(WhiskActivation.kindAnnotation, JsString(job.action.exec.kind)) ++
           Parameters(WhiskActivation.timeoutAnnotation, JsBoolean(isTimeout)) ++
-          causedBy ++ initTime ++ binding
+          causedBy ++ initTime ++ binding ++ queueing
       })
   }
 

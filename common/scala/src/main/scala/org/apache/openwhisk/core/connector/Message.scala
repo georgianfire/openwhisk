@@ -60,7 +60,7 @@ case class ActivationMessage(override val transid: TransactionId,
                              cause: Option[ActivationId] = None,
                              traceContext: Option[Map[String, String]] = None,
                              containerId: Option[String] = None,
-                             coldStartSize: Option[(ByteSize, CpuTime)] = None)
+                             size: Option[(ByteSize, CpuTime)] = None)
     extends Message {
 
   override def serialize = ActivationMessage.serdes.write(this).compactPrint

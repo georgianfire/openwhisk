@@ -142,6 +142,7 @@ object WhiskActivation
   val causedByAnnotation = "causedBy"
   val initTimeAnnotation = "initTime"
   val waitTimeAnnotation = "waitTime"
+  val queueingTimeannotation = "queueingTime"
   val conductorAnnotation = "conductor"
   val timeoutAnnotation = "timeout"
 

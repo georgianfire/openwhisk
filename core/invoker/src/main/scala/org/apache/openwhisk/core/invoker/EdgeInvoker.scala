@@ -7,7 +7,7 @@ import akka.event.Logging.InfoLevel
 import org.apache.openwhisk.common.tracing.WhiskTracerProvider
 import org.apache.openwhisk.common.{Logging, LoggingMarkers, TransactionId}
 import org.apache.openwhisk.core.connector.{ActivationMessage, CombinedCompletionAndResultMessage, ContainerOperationMessage, MessageFeed, MessageProducer}
-import org.apache.openwhisk.core.containerpool.kubernetes.ActionExecutionMessage.{RunOnContainer, RunOnNewContainerWithSize, RunWithEphemeralContainer}
+import org.apache.openwhisk.core.containerpool.kubernetes.ActionExecutionMessage.{RunOnContainerWithSize, RunWithEphemeralContainer}
 import org.apache.openwhisk.core.containerpool.kubernetes.EdgeContainerPool
 import org.apache.openwhisk.core.containerpool.{ContainerPoolConfig, ContainerProxy}
 import org.apache.openwhisk.core.database.{DocumentTypeMismatchException, DocumentUnreadable, NoDocumentException, UserContext}
@@ -48,7 +48,7 @@ class EdgeInvoker(whiskConfig: WhiskConfig,
       poolConfig,
       factoryWithFixedSize = Some(containerFactory.createContainerWithFixedSize)))
 
-  private val pool = actorSystem.actorOf(EdgeContainerPool.props(childFactory))
+  private val pool = actorSystem.actorOf(EdgeContainerPool.props(childFactory, activationFeed))
 
   override def processActivationMessage(bytes: Array[Byte]): Future[Unit] = {
     Future(ActivationMessage.parse(new String(bytes, StandardCharsets.UTF_8)))
@@ -82,10 +82,8 @@ class EdgeInvoker(whiskConfig: WhiskConfig,
                   // This is a user action and the target container should be specified
                   if (msg.user.namespace.name.asString != systemNamespace) {
                     val containerId = msg.containerId.get
-                    msg.coldStartSize match {
-                      case Some((memory, cpu)) => pool ! RunOnNewContainerWithSize(executable, msg, containerId, memory, cpu)
-                      case None => pool ! RunOnContainer(executable, msg, containerId)
-                    }
+                    val (memory, cpu) = msg.size.get
+                    pool ! RunOnContainerWithSize(executable, msg, containerId, memory, cpu)
                   } else {
                     pool ! RunWithEphemeralContainer(executable, msg)
                   }
@@ -136,6 +134,14 @@ class EdgeInvoker(whiskConfig: WhiskConfig,
           logging.warn(this, s"namespace ${msg.user.namespace.name} was blocked.")
           Future.successful(())
         }
+      }
+      .recoverWith {
+        case t =>
+          // Iff everything above failed, we have a terminal error at hand. Either the message failed
+          // to deserialize, or something threw an error where it is not expected to throw.
+          activationFeed ! MessageFeed.Processed
+          logging.error(this, s"terminal failure while processing message: $t")
+          Future.successful(())
       }
   }
 
