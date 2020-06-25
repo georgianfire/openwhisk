@@ -118,12 +118,12 @@ class InvokerReactive(
   }
 
   /** Initialize message consumers */
-  private val topic = s"invoker${instance.toInt}"
+  protected[invoker] val topic = s"invoker${instance.toInt}"
   private val maximumContainers = (poolConfig.userMemory / MemoryLimit.MIN_MEMORY).toInt
-  private val msgProvider = SpiLoader.get[MessagingProvider]
+  protected[invoker] val msgProvider = SpiLoader.get[MessagingProvider]
 
   //number of peeked messages - increasing the concurrentPeekFactor improves concurrent usage, but adds risk for message loss in case of crash
-  private val maxPeek =
+  protected[invoker] val maxPeek =
     math.max(maximumContainers, (maximumContainers * limitsConfig.max * poolConfig.concurrentPeekFactor).toInt)
 
   private val consumer =

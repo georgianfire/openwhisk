@@ -60,7 +60,7 @@ case class ActivationMessage(override val transid: TransactionId,
                              initArgs: Set[String] = Set.empty,
                              cause: Option[ActivationId] = None,
                              traceContext: Option[Map[String, String]] = None,
-                             containerId: Option[ContainerId] = None)
+                             containerInfo: Option[Either[ContainerId, (ByteSize, CpuTime)]] = None)
     extends Message {
 
   override def serialize = ActivationMessage.serdes.write(this).compactPrint
@@ -174,6 +174,8 @@ object ActivationMessage extends DefaultJsonProtocol {
 
   private implicit val fqnSerdes = FullyQualifiedEntityName.serdes
   private implicit val cidSerdes = jsonFormat1(ContainerId)
+  import size.{serdes => memorySerdes}
+  import CpuTime.{serdes => cpuSerdes}
   implicit val serdes = jsonFormat12(ActivationMessage.apply)
 }
 
@@ -428,4 +430,56 @@ object EventMessage extends DefaultJsonProtocol {
   }
 
   def parse(msg: String) = Try(format.read(msg.parseJson))
+}
+
+case class ContainerOperationMessage(operation: ContainerOperationMessage.Operation,
+                                     containerId: Option[ContainerId] = None,
+                                     memory: Option[ByteSize] = None,
+                                     cpu: Option[CpuTime] = None) extends Message {
+  override def serialize: String = ContainerOperationMessage.format.write(this).compactPrint
+}
+
+object ContainerOperationMessage extends DefaultJsonProtocol {
+  sealed trait Operation {
+    val value: String
+  }
+
+  object Create extends Operation {
+    override val value: String = "create"
+  }
+
+  object Resize extends Operation {
+    override val value: String = "resize"
+  }
+
+  object GracefullyTerminate extends Operation {
+    override val value: String = "gracefully_terminate"
+  }
+
+  object ForceTerminate extends Operation {
+    override val value: String = "force_terminate"
+  }
+
+  implicit private val operationSerdes = new RootJsonFormat[Operation] {
+    override def read(json: JsValue): Operation = json match {
+      case JsString(value) => value match {
+        case Create.value => Create
+        case Resize.value => Resize
+        case GracefullyTerminate.value => GracefullyTerminate
+        case ForceTerminate.value => ForceTerminate
+        case msg => deserializationError(s"Unrecognized message: $msg")
+      }
+      case somethingElse => deserializationError(s"Unrecognized message format, expected string, received $somethingElse")
+    }
+
+    override def write(obj: Operation): JsValue = JsString(obj.value)
+  }
+
+  implicit private val containerIdSerdes = jsonFormat1(ContainerId)
+  import size.{serdes => memorySerdes}
+
+  implicit val format: RootJsonFormat[ContainerOperationMessage] =
+    jsonFormat(ContainerOperationMessage.apply, "operation", "containerId", "memory", "cpu")
+
+  def parse(msg: String): Try[ContainerOperationMessage] = Try(format.read(msg.parseJson))
 }

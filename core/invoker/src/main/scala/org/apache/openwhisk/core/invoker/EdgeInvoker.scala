@@ -2,21 +2,23 @@ package org.apache.openwhisk.core.invoker
 
 import java.nio.charset.StandardCharsets
 
-import akka.actor.{ActorRefFactory, ActorSystem}
+import akka.actor.{ActorRefFactory, ActorSystem, Props}
+import akka.event.Logging.InfoLevel
 import org.apache.openwhisk.common.tracing.WhiskTracerProvider
-import org.apache.openwhisk.common.{Logging, TransactionId}
-import org.apache.openwhisk.core.connector.{ActivationMessage, CombinedCompletionAndResultMessage, MessageFeed, MessageProducer}
-import org.apache.openwhisk.core.containerpool.kubernetes.ActionExecutionMessage.RunWithEphemeralContainer
+import org.apache.openwhisk.common.{Logging, LoggingMarkers, TransactionId}
+import org.apache.openwhisk.core.connector.{ActivationMessage, CombinedCompletionAndResultMessage, ContainerOperationMessage, MessageFeed, MessageProducer}
+import org.apache.openwhisk.core.containerpool.kubernetes.ActionExecutionMessage.{RunOnNewContainerWithSize, RunWithEphemeralContainer}
 import org.apache.openwhisk.core.containerpool.kubernetes.EdgeContainerPool
 import org.apache.openwhisk.core.containerpool.{ContainerPoolConfig, ContainerProxy}
 import org.apache.openwhisk.core.database.{DocumentTypeMismatchException, DocumentUnreadable, NoDocumentException, UserContext}
-import org.apache.openwhisk.core.entity.{ActivationResponse, ConcurrencyLimitConfig, DocRevision, FullyQualifiedEntityName, InvokerInstanceId, WhiskAction}
+import org.apache.openwhisk.core.entity.{ActivationResponse, ConcurrencyLimitConfig, DocRevision, FullyQualifiedEntityName, InvokerInstanceId, TimeLimit, WhiskAction}
 import org.apache.openwhisk.core.{ConfigKeys, WhiskConfig}
 import org.apache.openwhisk.http.Messages
 import pureconfig._
 import pureconfig.generic.auto._
 
 import scala.concurrent.Future
+import scala.concurrent.duration._
 
 class EdgeInvoker(whiskConfig: WhiskConfig,
                   instance: InvokerInstanceId,
@@ -29,6 +31,13 @@ class EdgeInvoker(whiskConfig: WhiskConfig,
   logging.info(this, s"Initializing $getClass")
 
   private val systemNamespace: String = "whisk.system"
+
+  private val controlTopic = s"invoker${instance.toInt}-control"
+  private val controlMessageConsumer =
+    msgProvider.getConsumer(whiskConfig, topic, controlTopic, maxPeek, maxPollInterval = TimeLimit.MAX_DURATION + 1.minute)
+  private val controlFeed = actorSystem.actorOf(Props(
+    new MessageFeed("control", logging, controlMessageConsumer, maxPeek, 1.second, processControlMessage)
+  ))
 
   private val childFactory = (f: ActorRefFactory) =>
     f.actorOf(ContainerProxy.props(containerFactory.createContainer,
@@ -47,7 +56,7 @@ class EdgeInvoker(whiskConfig: WhiskConfig,
       .flatMap { msg: ActivationMessage =>
         implicit val transid: TransactionId = msg.transid
 
-        logging.info(this, s"${msg.user.namespace.name} ${msg.containerId}")
+        logging.info(this, s"${msg.user.namespace.name} ${msg.containerInfo}")
 
         // Set trace context to continue tracing
         WhiskTracerProvider.tracer.setTraceContext(transid, msg.traceContext)
@@ -56,12 +65,13 @@ class EdgeInvoker(whiskConfig: WhiskConfig,
           // Note: a potential pitfall is that the user and action in the same activation can belong to different namespace
           // This should be avoided in experiment by users only running actions in its own namespace
           // TODO: fix this problem later
+          transid.started(this, LoggingMarkers.INVOKER_ACTIVATION, logLevel = InfoLevel)
           val namespace = msg.action.path
           val name = msg.action.name
           val actionId = FullyQualifiedEntityName(namespace, name).toDocId.asDocInfo(msg.revision)
           val subject = msg.user.subject
 
-          val hasRevision: Boolean = (actionId.rev != DocRevision.empty)
+          val hasRevision: Boolean = actionId.rev != DocRevision.empty
           if (!hasRevision) logging.warn(this, s"revision was not provided for ${actionId.id}")
 
           WhiskAction
@@ -71,8 +81,10 @@ class EdgeInvoker(whiskConfig: WhiskConfig,
                 case Some(executable) =>
                   // This is a user action and the target container should be specified
                   if (msg.user.namespace.name.asString != systemNamespace) {
-                    val containerId = msg.containerId.get
-                    Future.failed(new NotImplementedError())
+                    msg.containerInfo.get match {
+                      case Left(containerId) => Future.failed(new NotImplementedError())
+                      case Right((memory, cpu)) => pool ! RunOnNewContainerWithSize(executable, msg, memory, cpu)
+                    }
                   } else {
                     pool ! RunWithEphemeralContainer(executable, msg)
                   }
@@ -122,6 +134,21 @@ class EdgeInvoker(whiskConfig: WhiskConfig,
 
           logging.warn(this, s"namespace ${msg.user.namespace.name} was blocked.")
           Future.successful(())
+        }
+      }
+  }
+
+  def processControlMessage(bytes: Array[Byte]): Future[Unit] = {
+    Future(ContainerOperationMessage.parse(new String(bytes, StandardCharsets.UTF_8)))
+      .flatMap(Future.fromTry)
+      .flatMap { msg: ContainerOperationMessage =>
+        import ContainerOperationMessage._
+        logging.info(this, s"Received ContainerOperationMessage: $msg")
+        msg.operation match {
+          case Create => ???
+          case Resize => ???
+          case ForceTerminate => ???
+          case GracefullyTerminate => ???
         }
       }
   }

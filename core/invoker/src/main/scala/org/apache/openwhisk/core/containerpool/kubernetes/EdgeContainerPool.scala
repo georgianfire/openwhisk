@@ -3,9 +3,8 @@ package org.apache.openwhisk.core.containerpool.kubernetes
 import akka.actor.{Actor, ActorRef, ActorRefFactory, Props}
 import org.apache.openwhisk.common.{AkkaLogging, Logging, LoggingMarkers, MetricEmitter}
 import org.apache.openwhisk.core.connector.ActivationMessage
-import org.apache.openwhisk.core.containerpool.{ContainerId, ContainerRemoved, Run, RunWithSize}
-import org.apache.openwhisk.core.entity.{ByteSize, CpuTime, ExecutableWhiskAction}
-import org.apache.openwhisk.core.entity.size._
+import org.apache.openwhisk.core.containerpool.{ContainerId, ContainerRemoved, Remove, Run, RunWithSize}
+import org.apache.openwhisk.core.entity.{ByteSize, CpuLimit, CpuTime, ExecutableWhiskAction, MemoryLimit}
 
 import scala.collection.immutable
 import scala.concurrent.ExecutionContext
@@ -33,6 +32,11 @@ object ActionExecutionMessage {
   case class RunOnContainer(action: ExecutableWhiskAction,
                             msg: ActivationMessage,
                             containerId: ContainerId) extends ActionExecutionMessage
+
+  case class RunOnNewContainerWithSize(action: ExecutableWhiskAction,
+                                       msg: ActivationMessage,
+                                       memory: ByteSize,
+                                       cpu: CpuTime) extends ActionExecutionMessage
 }
 
 class EdgeContainerPool(containerFactory: ActorRefFactory => ActorRef) extends Actor {
@@ -62,14 +66,18 @@ class EdgeContainerPool(containerFactory: ActorRefFactory => ActorRef) extends A
       msg match{
         case RunWithEphemeralContainer(action, msg) =>
           val ephemeralContainer = containerFactory(context)
-          ephemeralContainer ! RunWithSize(action, msg, 256.MB, CpuTime(100))
-          // ephemeralContainer ! Remove
+          ephemeralContainer ! RunWithSize(action, msg, MemoryLimit.MIN_MEMORY, CpuLimit.MIN_CPU)
+          ephemeralContainer ! Remove
           containerDataByRef = containerDataByRef.updated(ephemeralContainer, EdgeContainerData(isEphermal=true))
 
         case RunOnContainer(action, msg, containerId) =>
           assert(pool.contains(containerId))
           val container = pool(containerId)
           container ! Run(action, msg)
+
+        case RunOnNewContainerWithSize(action, msg, memory, cpu) =>
+          val container = containerFactory(context)
+          container ! RunWithSize(action, msg, memory, cpu)
       }
     }
 

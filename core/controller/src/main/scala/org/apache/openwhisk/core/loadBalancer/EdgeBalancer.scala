@@ -9,6 +9,7 @@ import org.apache.openwhisk.core.WhiskConfig._
 import org.apache.openwhisk.core.connector.{ActivationMessage, MessageProducer, MessagingProvider}
 import org.apache.openwhisk.core.containerpool.ContainerId
 import org.apache.openwhisk.core.entity._
+import org.apache.openwhisk.core.entity.size._
 import org.apache.openwhisk.spi.SpiLoader
 
 import scala.concurrent.Future
@@ -49,11 +50,9 @@ class EdgeBalancer(
 
   private implicit val random: Random = new Random()
 
-  val schedulingState: EdgeBalancerState = EdgeBalancerState()
-
   private val monitor = actorSystem.actorOf(Props(new Actor{
     override def receive: Receive = {
-      case CurrentInvokerPoolState(newState) => schedulingState.updateInvokers(newState)
+      case CurrentInvokerPoolState(newState) => EdgeBalancerStateSingleton.updateInvokers(newState)
 
       // case CurrentContainerState(newState) => schedulingState.updateContainers(newState)
     }
@@ -69,24 +68,51 @@ class EdgeBalancer(
 
   override def releaseInvoker(invoker: InvokerInstanceId, entry: ActivationEntry): Unit = ???
 
-  override def invokerHealth(): Future[IndexedSeq[InvokerHealth]] = Future.successful(schedulingState.invokers)
+  override def invokerHealth(): Future[IndexedSeq[InvokerHealth]] = Future.successful(EdgeBalancerStateSingleton.invokers)
 
   override def publish(action: ExecutableWhiskActionMetaData, msg: ActivationMessage)
                       (implicit transid: TransactionId): Future[Future[Either[ActivationId, WhiskActivation]]] = {
     logging.info(this, s"User: ${msg.user.namespace.name.asString} with weight ${msg.user.limits.weight}")
     logging.info(this, s"Action: ${action.name.asString} with weight: ${action.limits.weight}")
 
-    EdgeBalancer.schedule(msg.action, schedulingState).map{ containerInfo =>
+    EdgeBalancer.schedule(msg.action, EdgeBalancerStateSingleton).map{ containerInfo =>
       val invoker = containerInfo.invoker
-      val msgWithContainerId = msg.copy(containerId = Some(containerInfo.id))
+      val msgWithContainerId = msg.copy(containerInfo = Some(Left(containerInfo.id)))
       val activationResult = setupActivation(msgWithContainerId, action, invoker)
       sendActivationToInvoker(messageProducer, msgWithContainerId, invoker).map(_ => activationResult)
     }.getOrElse {
       // TODO: This should be due to the action has no running containers.
       // Create one container and schedule to it.
-      ???
+      val invoker = EdgeBalancerStateSingleton.invokers.head.id
+      val memory = action.limits.memory.megabytes.MB
+      val cpu = action.limits.cpu.cpuTime
+      val msgWithNewContainerSize = msg.copy(containerInfo = Some(Right(memory, cpu)))
+      val activationResult = setupActivation(msgWithNewContainerSize, action, invoker)
+      sendActivationToInvoker(messageProducer, msgWithNewContainerSize, invoker).map(_ => activationResult)
     }
   }
+
+//  private def sendControlMessageToInvoker(producer: MessageProducer, msg: ContainerOperationMessage,  invoker: InvokerInstanceId) = {
+//    implicit val transactionId = msg.transid
+//
+//    val topic = s"invoker${invoker.toInt}-control"
+//
+//    val start = transactionId.started(
+//      this,
+//      LoggingMarkers.CONTROLLER_KAFKA,
+//      s"posting topic '$topic' with ${msg}'",
+//      logLevel = Logging.InfoLevel)
+//
+//    producer.send(topic, msg).andThen {
+//      case Success(status) =>
+//        transactionId.finished(
+//          this,
+//          start,
+//          s"posted to ${status.topic()}[${status.partition()}][${status.offset()}]",
+//          logLevel = Logging.InfoLevel)
+//      case Failure(_) => transactionId.failed(this, start, s"error on posting to topic $topic")
+//    }
+//  }
 }
 
 object EdgeBalancer extends LoadBalancerProvider {
@@ -159,23 +185,35 @@ object EdgeBalancer extends LoadBalancerProvider {
   }
 }
 
-case class EdgeBalancerState(
-  private var _invokers: IndexedSeq[InvokerHealth] = IndexedSeq.empty[InvokerHealth]) {
+trait EdgeBalancerState {
+  def invokers: IndexedSeq[InvokerHealth]
 
-  private var _containersPerAction: Map[FullyQualifiedEntityName, IndexedSeq[ContainerInfo]] = Map.empty
+  def updateInvokers(newInvokers: IndexedSeq[InvokerHealth]): Unit
 
-  def invokers: IndexedSeq[InvokerHealth] = _invokers
+  def getContainers(action: FullyQualifiedEntityName): Option[IndexedSeq[ContainerInfo]]
 
-  def getContainers(action: FullyQualifiedEntityName): Option[IndexedSeq[ContainerInfo]] = {
-    _containersPerAction.get(action)
-  }
+  def compareAndSetContainers(action: FullyQualifiedEntityName,
+                              expected: IndexedSeq[ContainerInfo],
+                              newContainers: IndexedSeq[ContainerInfo]): Boolean
+}
 
-  def updateInvokers(newInvokers: IndexedSeq[InvokerHealth]): Unit = {
-    _invokers = newInvokers
-  }
+object EdgeBalancerStateSingleton extends EdgeBalancerState {
+  private var _invokers: IndexedSeq[InvokerHealth] = IndexedSeq.empty
 
-  def updateContainers(action: FullyQualifiedEntityName, containers: IndexedSeq[ContainerInfo]): Unit = {
-    _containersPerAction = _containersPerAction.updated(action, containers)
+  private val _containersPerAction: collection.concurrent.Map[FullyQualifiedEntityName, IndexedSeq[ContainerInfo]] =
+    collection.concurrent.TrieMap.empty
+
+  override def invokers: IndexedSeq[InvokerHealth] = _invokers
+
+  override def updateInvokers(newInvokers: IndexedSeq[InvokerHealth]): Unit = this._invokers = newInvokers
+
+  override def getContainers(action: FullyQualifiedEntityName): Option[IndexedSeq[ContainerInfo]] =
+    this._containersPerAction.get(action)
+
+  override def compareAndSetContainers(action: FullyQualifiedEntityName,
+                                       expected: IndexedSeq[ContainerInfo],
+                                       newContainers: IndexedSeq[ContainerInfo]): Boolean = {
+    this._containersPerAction.replace(action, expected, newContainers)
   }
 }
 
