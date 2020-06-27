@@ -309,12 +309,13 @@ trait WskTestHelpers extends Matchers {
     }
   }
 
-  def getAdditionalTestSubject(newUser: String)(implicit wskadmin: RunCliCmd = WskAdmin.wskadmin): WskProps = {
+  def getAdditionalTestSubject(newUser: String)
+                              (implicit wskadmin: RunCliCmd = WskAdmin.wskadmin): WskProps = {
     WskProps(namespace = newUser, authKey = wskadmin.cli(Seq("user", "create", newUser)).stdout.trim)
   }
 
-  def disposeAdditionalTestSubject(subject: String, expectedExitCode: Int = SUCCESS_EXIT): Unit = {
-    import WskAdmin.wskadmin
+  def disposeAdditionalTestSubject(subject: String, expectedExitCode: Int = SUCCESS_EXIT)
+                                  (implicit wskadmin: RunCliCmd = WskAdmin.wskadmin): Unit = {
     withClue(s"failed to delete temporary subject $subject") {
       wskadmin.cli(Seq("user", "delete", subject), expectedExitCode).stdout should include("Subject deleted")
     }
