@@ -3,7 +3,7 @@ package org.apache.openwhisk.core.containerpool.kubernetes
 import akka.actor.{Actor, ActorRef, ActorRefFactory, Props}
 import org.apache.openwhisk.common.{AkkaLogging, Logging, LoggingMarkers, MetricEmitter}
 import org.apache.openwhisk.core.connector.{ActivationMessage, MessageFeed}
-import org.apache.openwhisk.core.containerpool.{ContainerRemoved, Remove, Run, RunWithSize}
+import org.apache.openwhisk.core.containerpool.{ContainerRemoved, Remove, Resize, Run, RunWithSize, Start}
 import org.apache.openwhisk.core.entity.{ByteSize, CpuLimit, CpuTime, ExecutableWhiskAction, MemoryLimit}
 
 import scala.collection.immutable
@@ -75,7 +75,9 @@ class EdgeContainerPool(containerFactory: ActorRefFactory => ActorRef,
               logging.info(this, s"cold starting container $containerId")
               val container = containerFactory(context)
               pool = pool.updated(containerId, container)
-              container ! RunWithSize(action, msg, memory, cpu)
+              container ! Start(action.exec, memory)
+              container ! Resize(None, Some(cpu))
+              container ! Run(action, msg)
           }
       }
 

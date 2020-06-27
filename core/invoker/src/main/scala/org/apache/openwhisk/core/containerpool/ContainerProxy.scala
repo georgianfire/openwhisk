@@ -189,8 +189,8 @@ case class WarmedData(override val container: Container,
 }
 
 // Events received by the actor
-sealed abstract class AbstractStart(val exec: CodeExec[_])
-case class Start(override val exec: CodeExec[_], memoryLimit: ByteSize) extends AbstractStart(exec)
+case class Start(exec: CodeExec[_], memoryLimit: ByteSize)
+
 sealed abstract class AbstractRun(val action: ExecutableWhiskAction, val msg: ActivationMessage) {
   val queueingStart: Instant = Instant.now()
   var queueingEnd: Instant = Instant.now()
@@ -202,8 +202,6 @@ case object Remove
 case class HealthPingEnabled(enabled: Boolean)
 
 // Events receivent by the actor from EdgeContainerPool
-case class StartWithSize(override val exec: CodeExec[_], memory: ByteSize, cpu: CpuTime) extends AbstractStart(exec)
-
 case class RunWithSize(override val action: ExecutableWhiskAction,
                        override val msg: ActivationMessage,
                        memory: ByteSize,
@@ -293,34 +291,20 @@ class ContainerProxy(factory: (TransactionId,
 
   when(Uninitialized) {
     // pre warm a container (creates a stem cell container)
-    case Event(job: AbstractStart, _) =>
-      val container = job match {
-        case Start(exec, memoryLimit) =>
-          factory(
-            TransactionId.invokerWarmup,
-            ContainerProxy.containerName(instance, "prewarm", exec.kind),
-            exec.image,
-            exec.pull,
-            memoryLimit,
-            poolConfig.cpuShare(memoryLimit),
-            None)
-        case StartWithSize(exec, memory, cpu) =>
-          val factory = factoryWithFixedSize.get
-          factory(
-            TransactionId.invokerWarmup,
-            ContainerProxy.containerName(instance, exec.image.name, exec.kind),
-            exec.image,
-            exec.pull,
-            memory,
-            cpu,
-            None)
-      }
+    case Event(job: Start, _) =>
+      val Start(exec, memoryLimit) = job
+      val container = factory(
+        TransactionId.invokerWarmup,
+        ContainerProxy.containerName(instance, "prewarm", exec.kind),
+        exec.image,
+        exec.pull,
+        memoryLimit,
+        poolConfig.cpuShare(memoryLimit),
+        None)
+
 
       container
-        .map(container => PreWarmCompleted(job match {
-          case Start(exec, memoryLimit) => PreWarmedData(container, exec.kind, memoryLimit)
-          case StartWithSize(exec, memory, cpu) => PreWarmedData(container, exec.kind, memory)
-        })).pipeTo(self)
+        .map(container => PreWarmCompleted(PreWarmedData(container, exec.kind, memoryLimit))).pipeTo(self)
 
       goto(Starting)
 
@@ -420,6 +404,12 @@ class ContainerProxy(factory: (TransactionId,
       goto(Running) using PreWarmedData(data.container, data.kind, data.memoryLimit, 1)
 
     case Event(Remove, data: PreWarmedData) => destroyContainer(data)
+
+    case Event(job: Resize, data: PreWarmedData) =>
+      implicit val transactionId: TransactionId = TransactionId.invokerNanny
+      val container = data.container
+      resize(container, job.memory, job.cpu)
+      stay()
 
     // prewarm container failed
     case Event(_: FailureMessage, data: PreWarmedData) =>
