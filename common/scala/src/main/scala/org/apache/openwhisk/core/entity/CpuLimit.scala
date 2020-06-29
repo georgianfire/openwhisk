@@ -9,7 +9,9 @@ import scala.util.{Failure, Success, Try}
 
 protected[entity] case class CpuLimitConfig(min: CpuTime, max: CpuTime, std: CpuTime)
 
-class CpuLimit private (val cpuTime: CpuTime) extends AnyVal
+class CpuLimit private (val cpuTime: CpuTime) extends AnyVal {
+  def toMilliCpu: Int = cpuTime.milliCpus
+}
 object CpuLimit {
   val config: CpuLimitConfig = loadConfigOrThrow[CpuLimitConfig](ConfigKeys.cpu)
 

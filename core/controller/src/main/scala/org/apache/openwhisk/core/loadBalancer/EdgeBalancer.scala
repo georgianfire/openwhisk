@@ -1,5 +1,8 @@
 package org.apache.openwhisk.core.loadBalancer
 
+import java.time.Instant
+import java.util.concurrent.ConcurrentLinkedQueue
+
 import akka.actor.{Actor, ActorRef, ActorRefFactory, ActorSystem, Props}
 import akka.stream.ActorMaterializer
 import org.apache.kafka.clients.producer.RecordMetadata
@@ -11,7 +14,9 @@ import org.apache.openwhisk.core.entity._
 import org.apache.openwhisk.core.entity.size._
 import org.apache.openwhisk.spi.SpiLoader
 
+import scala.annotation.tailrec
 import scala.concurrent.Future
+import scala.concurrent.duration._
 import scala.util.Random
 
 /**
@@ -57,6 +62,234 @@ class EdgeBalancer(
     }
   }))
 
+  case class ActivationRecord(user: Namespace, action: FullyQualifiedEntityName, time: Instant)
+  private val activationStore: ConcurrentLinkedQueue[ActivationRecord] = new ConcurrentLinkedQueue[ActivationRecord]
+
+  private val updateResources: Runnable = new Runnable {
+    private val windowPeriod = 2.minutes
+    private val burstWindowPeriod = 10.seconds
+
+    override def run(): Unit = {
+      logging.info(this, "Updating resources")
+
+      val activations = activationStore.toArray(Array.empty[ActivationRecord])
+      val now = Instant.now()
+      val activationsByWindowStatus =
+        activations.groupBy(record => record.time isAfter now.minusSeconds(windowPeriod.toSeconds))
+
+      // Remove activations records that are outdated
+      activationsByWindowStatus.getOrElse(false, Array.empty).foreach(activationStore.remove)
+
+      val activationTimeByUserAction: Map[(Namespace, FullyQualifiedEntityName), Array[Instant]] =
+        activationsByWindowStatus.getOrElse(true, Array.empty)
+          .groupBy{ case ActivationRecord(user, action, _) => (user, action)}
+          .mapValues(_.map(_.time))
+
+      val predictedCapacityByUserAction = activationTimeByUserAction.map { record =>
+        val ((user, action), activationTimeArray) = record
+
+        val arrivalRate: Double = {
+          val longWindowArrivalRate = activationTimeArray.length.doubleValue / windowPeriod.toSeconds
+          val burstWindowArrivalRate = activationTimeArray.count(_.isAfter(now.minusSeconds(burstWindowPeriod.toSeconds))).doubleValue / burstWindowPeriod.toSeconds
+          if (burstWindowArrivalRate >= 2 * longWindowArrivalRate) burstWindowArrivalRate
+          else longWindowArrivalRate
+        }
+
+        logging.info(this, s"$action has arrival rate $arrivalRate")
+
+        val containers = EdgeBalancerStateSingleton.getContainers(user, action).getOrElse(IndexedSeq.empty)
+        val standardCpu = EdgeBalancerStateSingleton.actionStandardCpuMap(action)
+        val maxInstances = 100 // Should be read from action limits
+
+        if (containers.isEmpty || containers.forall(_.cpu == standardCpu)) {
+          // All current containers have the standard size (Homogeneous)
+          val serviceRate = getServiceRate(action, standardCpu)
+          val predictedCapacity = planHomogeneous(arrivalRate, serviceRate, 100.milliseconds, maxInstances)
+          ((user, action), List.fill(predictedCapacity)(standardCpu.milliCpus))
+        } else {
+          // Heterogeneous
+          val currentCapacity =
+            EdgeBalancerStateSingleton.getContainers(user, action)
+            .getOrElse(IndexedSeq.empty)
+            .map(_.cpu)
+
+          val currentServiceRates = currentCapacity.map(cpu => getServiceRate(action, cpu))
+          val standardServiceRate = getServiceRate(action, standardCpu)
+          val predictedServiceRates =
+            planHeterogeneous(arrivalRate, currentServiceRates, standardServiceRate, 100.milliseconds, maxInstances)
+          val predictedCapacity = if (predictedServiceRates.length >= currentServiceRates.length) {
+            val n = predictedServiceRates.length - currentServiceRates.length
+            currentCapacity.map(_.milliCpus) ++ List.fill(n)(standardCpu.milliCpus)
+          }
+          ((user, action), predictedCapacity)
+        }
+      }
+
+      logging.info(this, s"$predictedCapacityByUserAction")
+    }
+
+    def planHomogeneous(arrivalRate: Double,
+                        serviceRate: Double,
+                        p95WaitingTime: FiniteDuration,
+                        maxInstances: Int): Int = {
+      def factorial(n: Int): BigInt = {
+        @tailrec
+        def loop(acc: BigInt, i: Int): BigInt = {
+          if (i ==0) acc
+          else loop(acc * i, i - 1)
+        }
+
+        loop(1, n)
+      }
+
+      logging.info(this, s"calculating queueing model for function with arrival rate $arrivalRate and service rate $serviceRate")
+
+      val r = arrivalRate / serviceRate
+      (1 to maxInstances).find { c =>
+        import math.{pow, floor}
+
+        val rho = r / c
+        if (rho >= 1) {
+          false
+        } else {
+          val p_0 = {
+            val temp = pow(r, c) / (factorial(c).doubleValue * (1 - rho)) +
+              (0 until c).map(n => pow(r, n) / factorial(n).doubleValue).sum
+            pow(temp, -1)
+          }
+
+          val l = floor(p95WaitingTime.toSeconds * c * serviceRate + c - 1).toInt
+          val p = (0 to l).map { n=>
+            if (n < c) {
+              p_0 * pow(r, n) / factorial(n).doubleValue
+            } else {
+              p_0 * pow(r, n) / (pow(c, n-c) * factorial(c).doubleValue)
+            }
+          }.sum
+
+          logging.info(this, s"c = $c, p = $p")
+          require(!p.isNaN)
+          p >= 0.95
+        }
+      }.getOrElse(maxInstances)
+    }
+
+    def planHeterogeneous(arrivalRate: Double,
+                          currentServiceRates: IndexedSeq[Double],
+                          standardServiceRate: Double,
+                          p95WaitingTime: FiniteDuration,
+                          maxInstances: Int): IndexedSeq[Double] = {
+
+      def isEnough(serviceRates: IndexedSeq[Double]): Boolean = {
+        import math.{pow, floor}
+
+        val c = serviceRates.length
+        val sortedServiceRates = serviceRates.sorted
+
+        def m(i: Int): Double = {
+          if (i >= c) {
+            sortedServiceRates.sum
+          } else {
+            sortedServiceRates.take(i).sum
+          }
+        }
+
+        def mproduct(i: Int): Double = {
+          (1 to i).map(m).foldLeft(1.0)(_ * _)
+        }
+
+        if (c == 0 || arrivalRate / m(c) >= 1) {
+          false
+        } else {
+          val rho =arrivalRate / m(c)
+          val p_0 = {
+            val temp = (0 until c).map(i =>
+              pow(arrivalRate, i) / mproduct(i)
+              ).sum + pow(arrivalRate, c) / ((1 - rho) * mproduct(c))
+            pow(temp, -1)
+          }
+
+          val l = floor(p95WaitingTime.toSeconds * m(c) + c - 1).toInt
+          val p = (0 to l).map(i =>
+            if (i < c) {
+              p_0 * pow(arrivalRate, i) / mproduct(i)
+            } else {
+              p_0 * (1 to c).map(j => arrivalRate / m(j)).foldLeft(1.0)(_ * _) *
+                ((c + 1) to i).map(j => arrivalRate / m(c)).foldLeft(1.0)(_ * _)
+            }
+          ).sum
+          p >= 0.95
+        }
+      }
+
+      val sortedServiceRates = currentServiceRates.sorted
+      val currentInstanceNum = sortedServiceRates.length
+      if (isEnough(sortedServiceRates)) {
+        val n = (1 to currentInstanceNum).find{ n =>
+          !isEnough(sortedServiceRates.take(n))
+        }.get
+        sortedServiceRates.take(n - 1)
+      } else {
+        val n = (1 to (maxInstances - currentInstanceNum)).find( n =>
+          isEnough(sortedServiceRates ++ List.fill(n)(standardServiceRate))
+        ).getOrElse(maxInstances - currentInstanceNum)
+        sortedServiceRates ++ List.fill(n)(standardServiceRate)
+      }
+
+    }
+  }
+
+  class ServiceRatePredictor(profilingResults: Map[Int, Double]) {
+    val minCpu = profilingResults.keys.min
+    val maxCpu = profilingResults.keys.max
+
+    def predict(cpu: Int): Double = {
+      require(cpu >= minCpu && cpu <= maxCpu, "cpu is out of range")
+      val serviceTime = if (profilingResults contains cpu) {
+        profilingResults(cpu)
+      } else {
+        // try to do Interpolation
+        val (lowerKey, lowerValue) = profilingResults.filterKeys(_ < cpu).max
+        val (upperKey, upperValue) = profilingResults.filterKeys(_ > cpu).min
+        lowerValue + (upperValue - lowerValue) * (cpu - lowerKey) / (upperKey - lowerKey)
+      }
+      1000 / serviceTime
+    }
+  }
+
+  private val mnv3Predictor = new ServiceRatePredictor(Map(
+    500 -> 1536.702,
+    600 -> 1409.370,
+    700 -> 1219.612,
+    800 -> 892.214,
+    900 -> 758.574,
+    1000 -> 691.208))
+
+  private val primePredictor = new ServiceRatePredictor(Map(
+    200 -> 658.440,
+    300 -> 441.998,
+    400 -> 337.668,
+    500 -> 266.404,
+    600 -> 226.204,
+    700 -> 187.234,
+    800 -> 161.184,
+  ))
+
+  def getServiceRate(action: FullyQualifiedEntityName, containerCpu: CpuTime): Double = {
+    action.name.asString match {
+      // the mobilenet V3 action
+      case name if name.startsWith("mnv3") =>
+        mnv3Predictor.predict(containerCpu.milliCpus)
+      case name if name.startsWith("") =>
+        primePredictor.predict(containerCpu.milliCpus)
+      case name =>
+        throw new NotImplementedError(s"Function $name has not been profiled")
+    }
+  }
+
+  private val schedulingPeriod: FiniteDuration = 5.seconds
+  actorSystem.scheduler.schedule(schedulingPeriod, schedulingPeriod, updateResources)
+
   override val invokerPool: ActorRef = invokerPoolFactory.createInvokerPool(
     actorSystem,
     messagingProvider,
@@ -66,7 +299,7 @@ class EdgeBalancer(
   )
 
   override def releaseInvoker(invoker: InvokerInstanceId, entry: ActivationEntry): Unit = {
-
+    // nothing needs to be done here
   }
 
   override def invokerHealth(): Future[IndexedSeq[InvokerHealth]] = Future.successful(EdgeBalancerStateSingleton.invokers)
@@ -76,6 +309,21 @@ class EdgeBalancer(
     logging.info(this, s"User: ${msg.user.namespace.name.asString} with weight ${msg.user.limits.weight}")
     logging.info(this, s"Action: ${action.name.asString} with weight: ${action.limits.weight}")
 
+    // Update state
+    activationStore.add(ActivationRecord(msg.user.namespace, msg.action, Instant.now))
+    if (!EdgeBalancerStateSingleton.userWeight.contains(msg.user.namespace)) {
+      val weight = msg.user.limits.weight.getOrElse(Weight()).weightValue
+      EdgeBalancerStateSingleton.userWeight = EdgeBalancerStateSingleton.userWeight.updated(msg.user.namespace, weight)
+    }
+
+    if (!EdgeBalancerStateSingleton.actionWeight.contains(msg.action)) {
+      EdgeBalancerStateSingleton.actionWeight =
+        EdgeBalancerStateSingleton.actionWeight.updated(msg.action, action.limits.weight.weightValue)
+      EdgeBalancerStateSingleton.actionStandardCpuMap =
+        EdgeBalancerStateSingleton.actionStandardCpuMap.updated(msg.action, action.limits.cpu.cpuTime)
+    }
+
+    // Attempt to schedule
     EdgeBalancer.schedule(msg.user.namespace, msg.action, EdgeBalancerStateSingleton).map{ containerInfo =>
       val invoker = containerInfo.invoker
       val msgWithContainerId = msg.copy(containerId = Some(containerInfo.id), size=Some((containerInfo.memory, containerInfo.cpu)))
@@ -92,7 +340,7 @@ class EdgeBalancer(
       val coldStartMsg = msg.copy(containerId = Some(containerId), size = Some((memory, cpu)))
       val activationResult = setupActivation(coldStartMsg, action, invoker)
       sendActivationToInvoker(messageProducer, coldStartMsg, invoker)map { _ =>
-        addContainer(msg.user.namespace, msg.action, ContainerInfo(containerId, invoker, memory, cpu))
+        addContainer(msg.user.namespace, msg.action, ContainerInfo(containerId, invoker, memory, cpu, action.limits.cpu.cpuTime))
         activationResult
       }
     }
@@ -221,6 +469,8 @@ trait EdgeBalancerState {
   def putIfAbsent(user: Namespace,
                   action: FullyQualifiedEntityName,
                   newContainers: IndexedSeq[ContainerInfo]): Boolean
+
+  def getScheduledUserActions: List[(Namespace, FullyQualifiedEntityName)]
 }
 
 object EdgeBalancerStateSingleton extends EdgeBalancerState {
@@ -247,12 +497,19 @@ object EdgeBalancerStateSingleton extends EdgeBalancerState {
                            action: FullyQualifiedEntityName,
                            newContainers: IndexedSeq[ContainerInfo]): Boolean =
     this._containersPerAction.putIfAbsent((user, action), newContainers).isEmpty
+
+  override def getScheduledUserActions: List[(Namespace, FullyQualifiedEntityName)] = this._containersPerAction.keys.toList
+
+  var userWeight = Map.empty[Namespace, Int]
+  var actionWeight = Map.empty[FullyQualifiedEntityName, Int]
+  var actionStandardCpuMap = Map.empty[FullyQualifiedEntityName, CpuTime]
 }
 
 case class ContainerInfo(
   id: String,
   invoker: InvokerInstanceId,
   memory: ByteSize,
-  cpu: CpuTime) {
-  def weight = cpu.milliCpus
+  cpu: CpuTime,
+  standardCpu: CpuTime) {
+  def weight: Int = cpu.milliCpus
 }

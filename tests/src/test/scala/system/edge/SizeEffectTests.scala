@@ -31,17 +31,18 @@ class SizeEffectTests extends TestHelpers with WskTestHelpers with WskActorSyste
 
   it should "create an action with default weight" in withAssetCleaner(user) { (wp, assetHelper) =>
     val cpu = CpuTime(milliCpus = 500)
-    val memory = 512.MB
-    val name = s"mnv3-size-test-${cpu.milliCpus}"
+    val memory = 256.MB
+    val name = s"prime-${cpu.milliCpus}"
 
     val creationResult = assetHelper.withCleaner(wskOperations.action, name) { (action, _) =>
-      action.create(name, None, docker = Some("binw/mnv3-action"), cpu = Some(cpu), memory = Some(memory))
+      // action.create(name, None, docker = Some("binw/mnv3-action"), cpu = Some(cpu), memory = Some(memory))
+      action.create(name, Some(TestUtils.getTestActionFilename("prime.py")), cpu = Some(cpu), memory = Some(memory))
     }
 
     val times = 500
     val activationIds = 1 to times map { _ =>
       val runResult = wskOperations.action.invoke(name, parameters = Map("n" -> JsNumber(5000)))
-      Thread.sleep(1000)
+      // Thread.sleep(1000)
       wskOperations.activation.extractActivationId(runResult)
     }
 
