@@ -8,6 +8,7 @@ import org.apache.openwhisk.common.tracing.WhiskTracerProvider
 import org.apache.openwhisk.common.{Logging, LoggingMarkers, TransactionId}
 import org.apache.openwhisk.core.connector.{ActivationMessage, CombinedCompletionAndResultMessage, ContainerOperationMessage, MessageFeed, MessageProducer}
 import org.apache.openwhisk.core.containerpool.kubernetes.ActionExecutionMessage.{RunOnContainerWithSize, RunWithEphemeralContainer}
+import org.apache.openwhisk.core.containerpool.kubernetes.EdgeContainerOperationMessage.CreateContainer
 import org.apache.openwhisk.core.containerpool.kubernetes.EdgeContainerPool
 import org.apache.openwhisk.core.containerpool.{ContainerPoolConfig, ContainerProxy}
 import org.apache.openwhisk.core.database.{DocumentTypeMismatchException, DocumentUnreadable, NoDocumentException, UserContext}
@@ -149,10 +150,32 @@ class EdgeInvoker(whiskConfig: WhiskConfig,
     Future(ContainerOperationMessage.parse(new String(bytes, StandardCharsets.UTF_8)))
       .flatMap(Future.fromTry)
       .flatMap { msg: ContainerOperationMessage =>
+        implicit val transactionId = msg.transid
         import ContainerOperationMessage._
         logging.info(this, s"Received ContainerOperationMessage: $msg")
         msg.operation match {
-          case Create => ???
+          case Create =>
+            val action = msg.action.get
+            val rev = DocRevision("0.0.1")
+            val actionId = action.toDocId.asDocInfo(rev)
+            WhiskAction
+              .get(entityStore, actionId.id, actionId.rev, fromCache = true)
+              .flatMap { action =>
+                action.toExecutableWhiskAction match {
+                  case Some(executable) =>
+                    val containerId = msg.containerId
+                    val memory = msg.memory.get
+                    val cpu = msg.cpu.get
+
+                    logging.info(this, s"Creating container for action $actionId with $memory memory and $cpu cpu")
+                    pool ! CreateContainer(executable, containerId, memory, cpu)
+                    Future.successful(())
+                  case None =>
+                    logging.error(this, s"non-executable action reached the invoker: ${action.fullyQualifiedName(false)}")
+                    Future.failed(new IllegalArgumentException("non-executable action reached the invoker"))
+                }
+              }
+
           case Resize => ???
           case ForceTerminate => ???
           case GracefullyTerminate => ???

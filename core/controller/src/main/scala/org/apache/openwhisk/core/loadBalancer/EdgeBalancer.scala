@@ -4,12 +4,13 @@ import java.time.Instant
 import java.util.concurrent.ConcurrentLinkedQueue
 
 import akka.actor.{Actor, ActorRef, ActorRefFactory, ActorSystem, Props}
+import akka.event.Logging
 import akka.stream.ActorMaterializer
 import org.apache.kafka.clients.producer.RecordMetadata
-import org.apache.openwhisk.common.{Logging, TransactionId}
+import org.apache.openwhisk.common.{Logging, LoggingMarkers, TransactionId}
 import org.apache.openwhisk.core.WhiskConfig
 import org.apache.openwhisk.core.WhiskConfig._
-import org.apache.openwhisk.core.connector.{ActivationMessage, MessageProducer, MessagingProvider}
+import org.apache.openwhisk.core.connector.{ActivationMessage, ContainerOperationMessage, MessageProducer, MessagingProvider}
 import org.apache.openwhisk.core.entity._
 import org.apache.openwhisk.core.entity.size._
 import org.apache.openwhisk.spi.SpiLoader
@@ -17,7 +18,7 @@ import org.apache.openwhisk.spi.SpiLoader
 import scala.annotation.tailrec
 import scala.concurrent.Future
 import scala.concurrent.duration._
-import scala.util.Random
+import scala.util.{Failure, Random, Success}
 
 /**
  * ## Limitations:
@@ -65,6 +66,11 @@ class EdgeBalancer(
   case class ActivationRecord(user: Namespace, action: FullyQualifiedEntityName, time: Instant)
   private val activationStore: ConcurrentLinkedQueue[ActivationRecord] = new ConcurrentLinkedQueue[ActivationRecord]
 
+  sealed trait ResourceUpdate
+  object Stay extends ResourceUpdate
+  case class Add(sizes: IndexedSeq[CpuTime]) extends ResourceUpdate
+  case class Remove(containers: IndexedSeq[ContainerInfo]) extends ResourceUpdate
+
   private val updateResources: Runnable = new Runnable {
     private val windowPeriod = 2.minutes
     private val burstWindowPeriod = 10.seconds
@@ -85,7 +91,7 @@ class EdgeBalancer(
           .groupBy{ case ActivationRecord(user, action, _) => (user, action)}
           .mapValues(_.map(_.time))
 
-      val predictedCapacityByUserAction = activationTimeByUserAction.map { record =>
+      val predictedCapacityByUserAction: Map[(Namespace, FullyQualifiedEntityName), Seq[Int]] = activationTimeByUserAction.map { record =>
         val ((user, action), activationTimeArray) = record
 
         val arrivalRate: Double = {
@@ -120,9 +126,55 @@ class EdgeBalancer(
           val predictedCapacity = if (predictedServiceRates.length >= currentServiceRates.length) {
             val n = predictedServiceRates.length - currentServiceRates.length
             currentCapacity.map(_.milliCpus) ++ List.fill(n)(standardCpu.milliCpus)
+          } else {
+            val n = currentServiceRates.length - predictedServiceRates.length
+            currentCapacity.map(_.milliCpus).sorted.drop(n)
           }
           ((user, action), predictedCapacity)
         }
+      }
+
+      val allUserAction = (EdgeBalancerStateSingleton.getScheduledUserActions ++ predictedCapacityByUserAction.keys).distinct
+
+      val operationByUserAction = allUserAction.map( userAction => {
+        val (user, action) = userAction
+        val currentContainers = EdgeBalancerStateSingleton.getContainers(user, action).getOrElse(Seq.empty)
+        val predictedContainerSizes = predictedCapacityByUserAction.get(user, action).getOrElse(Seq.empty)
+        val updateOperation = if (currentContainers.length == predictedContainerSizes.length) {
+          Stay
+        } else if (currentContainers.length < predictedContainerSizes.length) {
+          val n = predictedContainerSizes.length - currentContainers.length
+          val standardCpu = EdgeBalancerStateSingleton.actionStandardCpuMap(action)
+          Add(IndexedSeq.fill(n)(standardCpu))
+        } else {
+          val n = currentContainers.length - predictedContainerSizes.length
+          Remove(currentContainers.sortBy(_.cpu).take(n).toIndexedSeq)
+        }
+
+        ((user, action), updateOperation)
+      }).toMap
+
+      val containerToBeCreated = operationByUserAction.collect{
+        case ((user, action), Add(sizes)) => sizes.map(size => ContainerToBeCreated(user, action, size))
+      }.flatten.toIndexedSeq
+
+      tryPacking(containerToBeCreated) match {
+        case Some(solution) => solution.foreach{ record =>
+          val (ContainerToBeCreated(user, action, cpu), invoker) = record
+          val containerId = UUID().asString
+          val memory = EdgeBalancerStateSingleton.actionMemoryMap(action)
+          val contanerCreationMessage = ContainerOperationMessage(
+            ContainerOperationMessage.Create,
+            containerId,
+            Some(memory),
+            Some(cpu),
+            Some(action)
+          )
+          sendControlMessageToInvoker(messageProducer, contanerCreationMessage, invoker).map(_ =>
+            addContainer(user, action, ContainerInfo(containerId, invoker, memory, cpu))
+          )
+        }
+        case None =>
       }
 
       logging.info(this, s"$predictedCapacityByUserAction")
@@ -158,7 +210,7 @@ class EdgeBalancer(
             pow(temp, -1)
           }
 
-          val l = floor(p95WaitingTime.toSeconds * c * serviceRate + c - 1).toInt
+          val l = floor((p95WaitingTime.toMillis.doubleValue / 1000) * c * serviceRate + c - 1).toInt
           val p = (0 to l).map { n=>
             if (n < c) {
               p_0 * pow(r, n) / factorial(n).doubleValue
@@ -167,7 +219,6 @@ class EdgeBalancer(
             }
           }.sum
 
-          logging.info(this, s"c = $c, p = $p")
           require(!p.isNaN)
           p >= 0.95
         }
@@ -209,7 +260,7 @@ class EdgeBalancer(
             pow(temp, -1)
           }
 
-          val l = floor(p95WaitingTime.toSeconds * m(c) + c - 1).toInt
+          val l = floor((p95WaitingTime.toMillis / 1000) * m(c) + c - 1).toInt
           val p = (0 to l).map(i =>
             if (i < c) {
               p_0 * pow(arrivalRate, i) / mproduct(i)
@@ -226,9 +277,9 @@ class EdgeBalancer(
       val currentInstanceNum = sortedServiceRates.length
       if (isEnough(sortedServiceRates)) {
         val n = (1 to currentInstanceNum).find{ n =>
-          !isEnough(sortedServiceRates.take(n))
+          !isEnough(sortedServiceRates.drop(n))
         }.get
-        sortedServiceRates.take(n - 1)
+        sortedServiceRates.drop(n - 1)
       } else {
         val n = (1 to (maxInstances - currentInstanceNum)).find( n =>
           isEnough(sortedServiceRates ++ List.fill(n)(standardServiceRate))
@@ -236,6 +287,23 @@ class EdgeBalancer(
         sortedServiceRates ++ List.fill(n)(standardServiceRate)
       }
 
+    }
+
+    case class ContainerToBeCreated(user: Namespace, action: FullyQualifiedEntityName, cpu: CpuTime)
+    def tryPacking(containersToBeCreated: IndexedSeq[ContainerToBeCreated]): Option[Map[ContainerToBeCreated, InvokerInstanceId]] = {
+      var capacityByInvoker = EdgeBalancerStateSingleton.getAvailableSpaces
+      val solution: collection.mutable.Map[ContainerToBeCreated, InvokerInstanceId] =
+        collection.mutable.Map.empty
+      for (container <- containersToBeCreated.sortBy(_.cpu).reverse) {
+        val (invoker, capacity) = capacityByInvoker.maxBy(_._2)
+        if (capacity >= container.cpu) {
+          solution += (container -> invoker)
+          capacityByInvoker = capacityByInvoker.updated(invoker, capacity - container.cpu)
+        } else {
+          return None
+        }
+      }
+      Some(solution.toMap)
     }
   }
 
@@ -321,6 +389,8 @@ class EdgeBalancer(
         EdgeBalancerStateSingleton.actionWeight.updated(msg.action, action.limits.weight.weightValue)
       EdgeBalancerStateSingleton.actionStandardCpuMap =
         EdgeBalancerStateSingleton.actionStandardCpuMap.updated(msg.action, action.limits.cpu.cpuTime)
+      EdgeBalancerStateSingleton.actionMemoryMap =
+        EdgeBalancerStateSingleton.actionMemoryMap.updated(msg.action, action.limits.memory.megabytes.MB)
     }
 
     // Attempt to schedule
@@ -330,18 +400,26 @@ class EdgeBalancer(
       val activationResult = setupActivation(msgWithContainerId, action, invoker)
       sendActivationToInvoker(messageProducer, msgWithContainerId, invoker).map(_ => activationResult)
     }.getOrElse {
-      // TODO: This should be due to the action has no running containers.
+      // This should be due to the action has no running containers.
       // Create one container and schedule to it.
-      val invoker = EdgeBalancerStateSingleton.invokers.head.id
-      val containerId = UUID().asString
-      val memory = action.limits.memory.megabytes.MB
-      val cpu = action.limits.cpu.cpuTime
 
-      val coldStartMsg = msg.copy(containerId = Some(containerId), size = Some((memory, cpu)))
-      val activationResult = setupActivation(coldStartMsg, action, invoker)
-      sendActivationToInvoker(messageProducer, coldStartMsg, invoker)map { _ =>
-        addContainer(msg.user.namespace, msg.action, ContainerInfo(containerId, invoker, memory, cpu, action.limits.cpu.cpuTime))
-        activationResult
+      // get the invoker with the most available space
+      val (invoker, availableCpu) = EdgeBalancerStateSingleton.getAvailableSpaces.toList.sortBy(_._2).reverse.head
+      if (availableCpu >= action.limits.cpu.cpuTime) {
+        // If the invoker has enough space then schedule
+        val containerId = UUID().asString
+        val memory = action.limits.memory.megabytes.MB
+        val cpu = action.limits.cpu.cpuTime
+
+        val coldStartMsg = msg.copy(containerId = Some(containerId), size = Some((memory, cpu)))
+        val activationResult = setupActivation(coldStartMsg, action, invoker)
+        sendActivationToInvoker(messageProducer, coldStartMsg, invoker) map { _ =>
+          addContainer(msg.user.namespace, msg.action, ContainerInfo(containerId, invoker, memory, cpu))
+          activationResult
+        }
+      } else {
+        // Give up for now
+        Future.failed(new NotImplementedError())
       }
     }
   }
@@ -361,27 +439,27 @@ class EdgeBalancer(
     }
   }
 
-//  private def sendControlMessageToInvoker(producer: MessageProducer, msg: ContainerOperationMessage,  invoker: InvokerInstanceId) = {
-//    implicit val transactionId = msg.transid
-//
-//    val topic = s"invoker${invoker.toInt}-control"
-//
-//    val start = transactionId.started(
-//      this,
-//      LoggingMarkers.CONTROLLER_KAFKA,
-//      s"posting topic '$topic' with ${msg}'",
-//      logLevel = Logging.InfoLevel)
-//
-//    producer.send(topic, msg).andThen {
-//      case Success(status) =>
-//        transactionId.finished(
-//          this,
-//          start,
-//          s"posted to ${status.topic()}[${status.partition()}][${status.offset()}]",
-//          logLevel = Logging.InfoLevel)
-//      case Failure(_) => transactionId.failed(this, start, s"error on posting to topic $topic")
-//    }
-//  }
+  private def sendControlMessageToInvoker(producer: MessageProducer, msg: ContainerOperationMessage,  invoker: InvokerInstanceId) = {
+    implicit val transactionId = msg.transid
+
+    val topic = s"invoker${invoker.toInt}-control"
+
+    val start = transactionId.started(
+      this,
+      LoggingMarkers.CONTROLLER_KAFKA,
+      s"posting topic '$topic' with $msg'",
+      logLevel = Logging.InfoLevel)
+
+    producer.send(topic, msg).andThen {
+      case Success(status) =>
+        transactionId.finished(
+          this,
+          start,
+          s"posted to ${status.topic()}[${status.partition()}][${status.offset()}]",
+          logLevel = Logging.InfoLevel)
+      case Failure(_) => transactionId.failed(this, start, s"error on posting to topic $topic")
+    }
+  }
 }
 
 object EdgeBalancer extends LoadBalancerProvider {
@@ -503,13 +581,32 @@ object EdgeBalancerStateSingleton extends EdgeBalancerState {
   var userWeight = Map.empty[Namespace, Int]
   var actionWeight = Map.empty[FullyQualifiedEntityName, Int]
   var actionStandardCpuMap = Map.empty[FullyQualifiedEntityName, CpuTime]
+  var actionMemoryMap = Map.empty[FullyQualifiedEntityName, ByteSize]
+
+  def getAvailableSpaces: Map[InvokerInstanceId, CpuTime] = {
+    val usedMilliCpusByInvoker: Map[InvokerInstanceId, Int] = _containersPerAction.values.flatten
+      .groupBy(containerInfo => containerInfo.invoker)
+      .map{ record =>
+        val (invoker, containers) = record
+        (invoker, containers.map(_.cpu.milliCpus).sum)
+      }
+
+    invokers.map { invokerHealth =>
+      val instance = invokerHealth.id
+      val availabieCpu = {
+        val availableMilliCpus= instance.userCpu.milliCpus - usedMilliCpusByInvoker.getOrElse(instance, 0)
+        if (availableMilliCpus >= 0) CpuTime(availableMilliCpus)
+        else CpuTime(0)
+      }
+      (instance, availabieCpu)
+    }.toMap
+  }
 }
 
 case class ContainerInfo(
   id: String,
   invoker: InvokerInstanceId,
   memory: ByteSize,
-  cpu: CpuTime,
-  standardCpu: CpuTime) {
+  cpu: CpuTime) {
   def weight: Int = cpu.milliCpus
 }

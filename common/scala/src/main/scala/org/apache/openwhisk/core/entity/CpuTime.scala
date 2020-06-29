@@ -3,7 +3,7 @@ package org.apache.openwhisk.core.entity
 import spray.json._
 
 case class CpuTime(milliCpus: Int) extends Ordered[CpuTime] {
-  require(milliCpus > 0, "Cpu time must be positive")
+  require(milliCpus >= 0, "Cpu time must be non-negative")
 
   def toCpuShares: Int = math.floor(milliCpus.doubleValue / 1000 * 1024).toInt
 
@@ -15,6 +15,8 @@ case class CpuTime(milliCpus: Int) extends Ordered[CpuTime] {
    */
 
   override def compare(other: CpuTime): Int = milliCpus compare other.milliCpus
+
+  def - (that: CpuTime): CpuTime = CpuTime(this.milliCpus - that.milliCpus)
 }
 
 object CpuTime {

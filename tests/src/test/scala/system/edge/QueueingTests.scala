@@ -10,11 +10,9 @@ import org.apache.openwhisk.core.containerpool.Interval
 import org.junit.runner.RunWith
 import org.scalatest.BeforeAndAfterAll
 import org.scalatestplus.junit.JUnitRunner
-import spray.json.JsObject
+import spray.json.JsNumber
 
-import scala.collection.mutable
-import scala.concurrent.{Await, Future}
-import scala.concurrent.duration._
+import scala.concurrent.Future
 import scala.util.Random
 
 @RunWith(classOf[JUnitRunner])
@@ -24,19 +22,23 @@ class QueueingTests extends TestHelpers with WskTestHelpers with WskActorSystem 
   val name = "prime"
   implicit val user = getAdditionalTestSubject(name)
 
+  override def afterAll(): Unit = {
+    disposeAdditionalTestSubject(user.namespace)
+  }
+
   wskadmin.cli(
     Seq("limits", "set", user.namespace,
       "--invocationsPerMinute", "102400",
       "--concurrentInvocations", "102400",
       "--firesPerMinute", "102400"))
 
-  override def afterAll(): Unit = {
-    disposeAdditionalTestSubject(user.namespace)
-  }
-
   val highRate = 30
   val lowRate = 5
   implicit val rng = new Random()
+
+  def getRate(start: Instant, now: Instant):Double = {
+    Interval(start, now).duration.toMinutes + 1
+  }
 
   def genExponential(lambda: Double)(implicit rng: Random): Double = {
     math.log(1 - rng.nextDouble()) / (-lambda)
@@ -48,25 +50,22 @@ class QueueingTests extends TestHelpers with WskTestHelpers with WskActorSystem 
     }
 
     val start = Instant.now
-    val activationIds = mutable.Buffer[Future[String]]()
+    println(start)
+
 
     while (Interval(start, Instant.now).duration.toMinutes < 5) {
-      val invokeResult = wskOperations.action.invoke(name)
-      val activationId = Future{ wskOperations.activation.extractActivationId(invokeResult).get }
-      activationIds += activationId
-      Thread.sleep((genExponential(lowRate) * 1000).toInt)
+      val activationId = Future{
+        val invokeResult = wskOperations.action.invoke(name, parameters = Map("n" -> JsNumber(5000)))
+        val activationId = wskOperations.activation.extractActivationId(invokeResult).get
+        wskOperations.activation.waitForActivation(activationId) match {
+          case Left(value) => println(value)
+          case Right(value) => println(value)
+        }
+      }
+
+      Thread.sleep((genExponential(getRate(start, Instant.now())) * 1000).toInt)
     }
 
-    val activationResultsFuture: Future[Seq[Either[String, JsObject]]] =
-      Future.sequence(activationIds.map( activationId => {
-        activationId.map(wskOperations.activation waitForActivation _)
-      }))
-
-    val activationResults = Await.ready(activationResultsFuture, 5.minutes).value.get
-    activationResults.foreach( results => results.foreach{
-      case Left(value) => println(value)
-      case Right(value) => println(value.compactPrint)
-    })
   }
 }
 

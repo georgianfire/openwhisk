@@ -5,7 +5,7 @@ def isPrime(n):
     return True
 
 def main(args):
-    n = args.get("n", "1000000")
+    n = args.get("n", "5000")
     n = int(n)
     primes = []
     for i in range(2, n):

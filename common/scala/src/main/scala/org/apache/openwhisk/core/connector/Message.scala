@@ -432,7 +432,11 @@ object EventMessage extends DefaultJsonProtocol {
 }
 
 case class ContainerOperationMessage(operation: ContainerOperationMessage.Operation,
-                                     containerId: String) extends Message {
+                                     containerId: String,
+                                     memory: Option[ByteSize],
+                                     cpu: Option[CpuTime],
+                                     action: Option[FullyQualifiedEntityName]
+                                    ) extends Message {
   override def serialize: String = ContainerOperationMessage.format.write(this).compactPrint
 }
 
@@ -472,8 +476,12 @@ object ContainerOperationMessage extends DefaultJsonProtocol {
     override def write(obj: Operation): JsValue = JsString(obj.value)
   }
 
-  implicit val format: RootJsonFormat[ContainerOperationMessage] =
-    jsonFormat(ContainerOperationMessage.apply, "operation", "containerId")
+  implicit val format: RootJsonFormat[ContainerOperationMessage] = {
+    import size.{serdes => memorySerdes}
+    import CpuTime.{serdes => cpuSerdes}
+    implicit val fqnSerdes = FullyQualifiedEntityName.serdes
+    jsonFormat(ContainerOperationMessage.apply, "operation", "containerId", "memory", "cpu", "action")
+  }
 
   def parse(msg: String): Try[ContainerOperationMessage] = Try(format.read(msg.parseJson))
 }

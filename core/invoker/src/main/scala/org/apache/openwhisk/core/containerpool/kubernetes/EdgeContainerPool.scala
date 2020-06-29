@@ -12,7 +12,10 @@ import scala.concurrent.ExecutionContext
 sealed trait EdgeContainerOperationMessage
 
 object EdgeContainerOperationMessage {
-  case class CreateContainer() extends EdgeContainerOperationMessage
+  case class CreateContainer(action: ExecutableWhiskAction,
+                             containerId: String,
+                             memory: ByteSize,
+                             cpu: CpuTime) extends EdgeContainerOperationMessage
 
   case class DeleteContainer() extends EdgeContainerOperationMessage
 
@@ -49,7 +52,13 @@ class EdgeContainerPool(containerFactory: ActorRefFactory => ActorRef,
       import EdgeContainerOperationMessage._
 
       op match {
-        case CreateContainer() => ???
+        case CreateContainer(action, containerId, memory, cpu) =>
+          assert(!pool.contains(containerId))
+          val container = containerFactory(context)
+          pool = pool.updated(containerId, container)
+          container ! Start(action.exec, memory)
+          container ! Resize(None, Some(cpu))
+
         case DeleteContainer() => ???
         case ResizeContainer() => ???
         case GracefulTerminateContainer() => ???
