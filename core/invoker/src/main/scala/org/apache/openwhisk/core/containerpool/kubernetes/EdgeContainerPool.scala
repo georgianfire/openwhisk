@@ -17,7 +17,7 @@ object EdgeContainerOperationMessage {
                              memory: ByteSize,
                              cpu: CpuTime) extends EdgeContainerOperationMessage
 
-  case class DeleteContainer() extends EdgeContainerOperationMessage
+  case class DeleteContainer(containerId: String) extends EdgeContainerOperationMessage
 
   case class ResizeContainer() extends EdgeContainerOperationMessage
 
@@ -59,7 +59,14 @@ class EdgeContainerPool(containerFactory: ActorRefFactory => ActorRef,
           container ! Start(action.exec, memory)
           container ! Resize(None, Some(cpu))
 
-        case DeleteContainer() => ???
+        case DeleteContainer(containerId) =>
+          pool.get(containerId) match {
+            case Some(container) =>
+              container ! Remove
+              pool = pool - containerId
+            case None => // The container is already removed, do nothing
+          }
+
         case ResizeContainer() => ???
         case GracefulTerminateContainer() => ???
       }

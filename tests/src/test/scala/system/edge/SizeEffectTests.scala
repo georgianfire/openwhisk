@@ -30,7 +30,7 @@ class SizeEffectTests extends TestHelpers with WskTestHelpers with WskActorSyste
       "--firesPerMinute", "102400"))
 
   it should "create an action with default weight" in withAssetCleaner(user) { (wp, assetHelper) =>
-    val cpu = CpuTime(milliCpus = 500)
+    val cpu = CpuTime(milliCpus = 300)
     val memory = 256.MB
     val name = s"prime-${cpu.milliCpus}"
 
@@ -41,14 +41,13 @@ class SizeEffectTests extends TestHelpers with WskTestHelpers with WskActorSyste
 
     val times = 500
     val activationIds = 1 to times map { _ =>
-      val runResult = wskOperations.action.invoke(name, parameters = Map("n" -> JsNumber(5000)))
+      val runResult = wskOperations.action.invoke(name, parameters = Map("n" -> JsNumber(3000)))
       // Thread.sleep(1000)
       wskOperations.activation.extractActivationId(runResult)
     }
 
     val activationResults: Seq[Either[String, JsObject]] = activationIds.map { activationIdOption =>
-      val activationId = activationIdOption.get
-      wskOperations.activation.waitForActivation(activationId)
+      wskOperations.activation.waitForActivation(activationIdOption.get)
     }
 
     // write activation results to file for further analysis
@@ -65,8 +64,7 @@ class SizeEffectTests extends TestHelpers with WskTestHelpers with WskActorSyste
     bufferedWriter.close()
     fileWriter.close()
 
-    activationResults.filter(_.isLeft).map(_.left.get).foreach(println)
-    activationResults.count(_.isRight) should equal(times)
+
   }
 
 }

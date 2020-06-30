@@ -17,6 +17,8 @@ case class CpuTime(milliCpus: Int) extends Ordered[CpuTime] {
   override def compare(other: CpuTime): Int = milliCpus compare other.milliCpus
 
   def - (that: CpuTime): CpuTime = CpuTime(this.milliCpus - that.milliCpus)
+
+  def + (that: CpuTime): CpuTime = CpuTime(this.milliCpus + that.milliCpus)
 }
 
 object CpuTime {

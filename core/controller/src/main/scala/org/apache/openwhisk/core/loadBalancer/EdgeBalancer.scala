@@ -175,6 +175,38 @@ class EdgeBalancer(
           )
         }
         case None =>
+          // Resource contention is happening, first do a garbage collection
+          operationByUserAction.foreach {
+            case ((user, action), Remove(containers)) => containers.foreach{ container =>
+              val containerRemovalMessage = ContainerOperationMessage(ContainerOperationMessage.ForceTerminate, container.id)
+              sendControlMessageToInvoker(messageProducer, containerRemovalMessage, container.invoker).map(_ =>
+                deleteContainer(user, action, container)
+              )
+            }
+          }
+
+          tryPacking(containerToBeCreated) match {
+            case Some(solution) =>
+              solution.foreach{ case (ContainerToBeCreated(user, action, cpu), invoker) =>
+                val containerId = UUID().asString
+                val memory = EdgeBalancerStateSingleton.actionMemoryMap(action)
+                val containerCreationMessage = ContainerOperationMessage(
+                  ContainerOperationMessage.Create,
+                  containerId,
+                  Some(memory),
+                  Some(cpu),
+                  Some(action)
+                )
+                sendControlMessageToInvoker(messageProducer, containerCreationMessage, invoker).map(_ =>
+                  addContainer(user, action, ContainerInfo(containerId, invoker, memory, cpu))
+                )
+              }
+            case None =>
+              val globalWeightByUserAction = calculateGlobalWeight(allUserAction)
+              val totalCapacityOfinvokers = EdgeBalancerStateSingleton.invokers.map(_.id.userCpu.milliCpus).sum
+
+          }
+
       }
 
       logging.info(this, s"$predictedCapacityByUserAction")
@@ -305,6 +337,33 @@ class EdgeBalancer(
       }
       Some(solution.toMap)
     }
+
+    def calculateGlobalWeight(allUserAction: List[(Namespace, FullyQualifiedEntityName)]): Map[(Namespace, FullyQualifiedEntityName), Double] = {
+      val totalActionWeightUnderUser = allUserAction.map{ case (user, action) =>
+        (user, EdgeBalancerStateSingleton.actionWeight(action))
+      }.groupBy(_._1).map { case (user, actionWeights) =>
+        (user, actionWeights.map(_._2).sum)
+      }
+
+      val totalUserWeight =
+        allUserAction
+          .map(_._1)
+          .distinct
+          .map(user => EdgeBalancerStateSingleton.userWeight(user))
+          .sum
+
+      allUserAction.map{ case (user, action) =>
+        (user, action) -> (EdgeBalancerStateSingleton.actionWeight(action).doubleValue / totalActionWeightUnderUser(user)) *
+          (EdgeBalancerStateSingleton.userWeight(user).doubleValue / totalUserWeight)
+      }.toMap
+    }
+
+    def calculateQuota(allUserAction: List[(Namespace, FullyQualifiedEntityName)],
+                       globalWeight: Map[(Namespace, FullyQualifiedEntityName), Weight],
+                       predictedCapacityByUserAction: Map[(Namespace, FullyQualifiedEntityName), Seq[Int]]) = {
+      val totalCapacityOfAllInvokers = EdgeBalancerStateSingleton.invokers.map(_.id.userCpu.milliCpus).sum
+
+    }
   }
 
   class ServiceRatePredictor(profilingResults: Map[Int, Double]) {
@@ -334,13 +393,14 @@ class EdgeBalancer(
     1000 -> 691.208))
 
   private val primePredictor = new ServiceRatePredictor(Map(
-    200 -> 658.440,
-    300 -> 441.998,
-    400 -> 337.668,
-    500 -> 266.404,
-    600 -> 226.204,
-    700 -> 187.234,
-    800 -> 161.184,
+//    200 -> 658.440,
+//    300 -> 441.998,
+//    400 -> 337.668,
+//    500 -> 266.404,
+//    600 -> 226.204,
+//    700 -> 187.234,
+//    800 -> 161.184,
+    300 -> 168.270000
   ))
 
   def getServiceRate(action: FullyQualifiedEntityName, containerCpu: CpuTime): Double = {
@@ -378,7 +438,6 @@ class EdgeBalancer(
     logging.info(this, s"Action: ${action.name.asString} with weight: ${action.limits.weight}")
 
     // Update state
-    activationStore.add(ActivationRecord(msg.user.namespace, msg.action, Instant.now))
     if (!EdgeBalancerStateSingleton.userWeight.contains(msg.user.namespace)) {
       val weight = msg.user.limits.weight.getOrElse(Weight()).weightValue
       EdgeBalancerStateSingleton.userWeight = EdgeBalancerStateSingleton.userWeight.updated(msg.user.namespace, weight)
@@ -393,6 +452,8 @@ class EdgeBalancer(
         EdgeBalancerStateSingleton.actionMemoryMap.updated(msg.action, action.limits.memory.megabytes.MB)
     }
 
+    activationStore.add(ActivationRecord(msg.user.namespace, msg.action, Instant.now))
+
     // Attempt to schedule
     EdgeBalancer.schedule(msg.user.namespace, msg.action, EdgeBalancerStateSingleton).map{ containerInfo =>
       val invoker = containerInfo.invoker
@@ -403,8 +464,13 @@ class EdgeBalancer(
       // This should be due to the action has no running containers.
       // Create one container and schedule to it.
 
-      // get the invoker with the most available space
-      val (invoker, availableCpu) = EdgeBalancerStateSingleton.getAvailableSpaces.toList.sortBy(_._2).reverse.head
+      // randomly pick a invoker with the highest available capacity
+      val (invoker, availableCpu) = {
+        val sorted = EdgeBalancerStateSingleton.getAvailableSpaces.toList.sortBy(_._2).reverse
+        val candidates = sorted.takeWhile(_._2 == sorted.head._2)
+        candidates(random.nextInt(candidates.length))
+      }
+
       if (availableCpu >= action.limits.cpu.cpuTime) {
         // If the invoker has enough space then schedule
         val containerId = UUID().asString
@@ -436,6 +502,26 @@ class EdgeBalancer(
         }
       }
       logging.info(this, s"Added container with ${containerInfo.memory} memory and ${containerInfo.cpu} cpu for action $user/$action")
+    }
+  }
+
+  def deleteContainer(user: Namespace, action: FullyQualifiedEntityName, containerInfo: ContainerInfo): Future[Unit] = {
+    Future {
+      var updated = false
+      while (!updated) {
+        EdgeBalancerStateSingleton.getContainers(user, action) match {
+          case Some(oldContainers) =>
+            updated = if (oldContainers contains containerInfo) {
+              EdgeBalancerStateSingleton.compareAndSetContainers(user, action, oldContainers, oldContainers.filter(_ != containerInfo))
+            } else {
+              true // already deleted
+            }
+          case None =>
+            logging.warn(this, s"Cannot find containers for $user/$action, this really should not happen")
+            updated = true
+        }
+      }
+      logging.info(this, s"Removed container with ${containerInfo.memory} memory and ${containerInfo.cpu} cpu for action $user/$action")
     }
   }
 

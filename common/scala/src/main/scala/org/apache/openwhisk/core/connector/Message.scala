@@ -433,9 +433,9 @@ object EventMessage extends DefaultJsonProtocol {
 
 case class ContainerOperationMessage(operation: ContainerOperationMessage.Operation,
                                      containerId: String,
-                                     memory: Option[ByteSize],
-                                     cpu: Option[CpuTime],
-                                     action: Option[FullyQualifiedEntityName]
+                                     memory: Option[ByteSize] = None,
+                                     cpu: Option[CpuTime] = None,
+                                     action: Option[FullyQualifiedEntityName] = None
                                     ) extends Message {
   override def serialize: String = ContainerOperationMessage.format.write(this).compactPrint
 }

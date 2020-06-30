@@ -8,7 +8,7 @@ import org.apache.openwhisk.common.tracing.WhiskTracerProvider
 import org.apache.openwhisk.common.{Logging, LoggingMarkers, TransactionId}
 import org.apache.openwhisk.core.connector.{ActivationMessage, CombinedCompletionAndResultMessage, ContainerOperationMessage, MessageFeed, MessageProducer}
 import org.apache.openwhisk.core.containerpool.kubernetes.ActionExecutionMessage.{RunOnContainerWithSize, RunWithEphemeralContainer}
-import org.apache.openwhisk.core.containerpool.kubernetes.EdgeContainerOperationMessage.CreateContainer
+import org.apache.openwhisk.core.containerpool.kubernetes.EdgeContainerOperationMessage.{CreateContainer, DeleteContainer}
 import org.apache.openwhisk.core.containerpool.kubernetes.EdgeContainerPool
 import org.apache.openwhisk.core.containerpool.{ContainerPoolConfig, ContainerProxy}
 import org.apache.openwhisk.core.database.{DocumentTypeMismatchException, DocumentUnreadable, NoDocumentException, UserContext}
@@ -177,7 +177,10 @@ class EdgeInvoker(whiskConfig: WhiskConfig,
               }
 
           case Resize => ???
-          case ForceTerminate => ???
+          case ForceTerminate => {
+            pool ! DeleteContainer(msg.containerId)
+            Future.successful(())
+          }
           case GracefullyTerminate => ???
         }
       }
