@@ -19,7 +19,8 @@ object EdgeContainerOperationMessage {
 
   case class DeleteContainer(containerId: String) extends EdgeContainerOperationMessage
 
-  case class ResizeContainer() extends EdgeContainerOperationMessage
+  case class ResizeContainer(containerId: String,
+                             cpu: CpuTime) extends EdgeContainerOperationMessage
 
   case class GracefulTerminateContainer() extends EdgeContainerOperationMessage
 }
@@ -67,7 +68,10 @@ class EdgeContainerPool(containerFactory: ActorRefFactory => ActorRef,
             case None => // The container is already removed, do nothing
           }
 
-        case ResizeContainer() => ???
+        case ResizeContainer(containerId, cpu) => {
+          assert(pool contains containerId)
+          pool(containerId) ! Resize(None, Some(cpu))
+        }
         case GracefulTerminateContainer() => ???
       }
     }

@@ -136,7 +136,7 @@ class EdgeBalancer(
 
       val allUserAction = (EdgeBalancerStateSingleton.getScheduledUserActions ++ predictedCapacityByUserAction.keys).distinct
 
-      val operationByUserAction = allUserAction.map( userAction => {
+      val operationByUserAction: Map[(Namespace, FullyQualifiedEntityName), ResourceUpdate] = allUserAction.map(userAction => {
         val (user, action) = userAction
         val currentContainers = EdgeBalancerStateSingleton.getContainers(user, action).getOrElse(Seq.empty)
         val predictedContainerSizes = predictedCapacityByUserAction.get(user, action).getOrElse(Seq.empty)
@@ -161,18 +161,7 @@ class EdgeBalancer(
       tryPacking(containerToBeCreated) match {
         case Some(solution) => solution.foreach{ record =>
           val (ContainerToBeCreated(user, action, cpu), invoker) = record
-          val containerId = UUID().asString
-          val memory = EdgeBalancerStateSingleton.actionMemoryMap(action)
-          val contanerCreationMessage = ContainerOperationMessage(
-            ContainerOperationMessage.Create,
-            containerId,
-            Some(memory),
-            Some(cpu),
-            Some(action)
-          )
-          sendControlMessageToInvoker(messageProducer, contanerCreationMessage, invoker).map(_ =>
-            addContainer(user, action, ContainerInfo(containerId, invoker, memory, cpu))
-          )
+          createContainer(user, action, cpu, invoker)
         }
         case None =>
           // Resource contention is happening, first do a garbage collection
@@ -180,31 +169,22 @@ class EdgeBalancer(
             case ((user, action), Remove(containers)) => containers.foreach{ container =>
               val containerRemovalMessage = ContainerOperationMessage(ContainerOperationMessage.ForceTerminate, container.id)
               sendControlMessageToInvoker(messageProducer, containerRemovalMessage, container.invoker).map(_ =>
-                deleteContainer(user, action, container)
+                deleteContainer(user, action, container.id)
               )
             }
+            case _ => // do nothing
           }
 
           tryPacking(containerToBeCreated) match {
             case Some(solution) =>
               solution.foreach{ case (ContainerToBeCreated(user, action, cpu), invoker) =>
-                val containerId = UUID().asString
-                val memory = EdgeBalancerStateSingleton.actionMemoryMap(action)
-                val containerCreationMessage = ContainerOperationMessage(
-                  ContainerOperationMessage.Create,
-                  containerId,
-                  Some(memory),
-                  Some(cpu),
-                  Some(action)
-                )
-                sendControlMessageToInvoker(messageProducer, containerCreationMessage, invoker).map(_ =>
-                  addContainer(user, action, ContainerInfo(containerId, invoker, memory, cpu))
-                )
+                createContainer(user ,action, cpu, invoker)
               }
             case None =>
-              val globalWeightByUserAction = calculateGlobalWeight(allUserAction)
-              val totalCapacityOfinvokers = EdgeBalancerStateSingleton.invokers.map(_.id.userCpu.milliCpus).sum
+              val globalWeightByFunction = calculateGlobalWeight(allUserAction)
+              val quotaPerFunction = calculateQuota(allUserAction, globalWeightByFunction, predictedCapacityByUserAction)
 
+              execute(allUserAction, quotaPerFunction, predictedCapacityByUserAction, operationByUserAction)
           }
 
       }
@@ -359,11 +339,158 @@ class EdgeBalancer(
     }
 
     def calculateQuota(allUserAction: List[(Namespace, FullyQualifiedEntityName)],
-                       globalWeight: Map[(Namespace, FullyQualifiedEntityName), Weight],
-                       predictedCapacityByUserAction: Map[(Namespace, FullyQualifiedEntityName), Seq[Int]]) = {
+                       globalWeight: Map[(Namespace, FullyQualifiedEntityName), Double],
+                       predictedCapacityByUserAction: Map[(Namespace, FullyQualifiedEntityName), Seq[Int]]): Map[(Namespace, FullyQualifiedEntityName), Int] = {
       val totalCapacityOfAllInvokers = EdgeBalancerStateSingleton.invokers.map(_.id.userCpu.milliCpus).sum
+      val functionsSortedByWeightedCapacity =  allUserAction.sortBy( function =>
+        predictedCapacityByUserAction(function).sum / globalWeight(function)
+      )
 
+      @tailrec
+      def loop(capacity: Double,
+               remainingFunctionsSortedByWeightedCapacity: List[(Namespace, FullyQualifiedEntityName)],
+               quotaPerFunction: Map[(Namespace, FullyQualifiedEntityName), Int]): Map[(Namespace, FullyQualifiedEntityName), Int] = {
+        import math.floor
+        if (remainingFunctionsSortedByWeightedCapacity.isEmpty) quotaPerFunction
+        else {
+          val function = remainingFunctionsSortedByWeightedCapacity.head
+          val quota = math.min(predictedCapacityByUserAction(function).sum,
+                               floor(capacity * globalWeight(function) / remainingFunctionsSortedByWeightedCapacity.map(function => globalWeight(function)).sum).intValue)
+
+          loop(capacity - quota, remainingFunctionsSortedByWeightedCapacity.tail, quotaPerFunction.updated(function, quota))
+        }
+      }
+
+      loop(totalCapacityOfAllInvokers, functionsSortedByWeightedCapacity, Map.empty)
     }
+
+    def execute(allUserAction: List[(Namespace, FullyQualifiedEntityName)],
+                quotaPerFunction: Map[(Namespace, FullyQualifiedEntityName), Int],
+                predictedCapacityByUserAction: Map[(Namespace, FullyQualifiedEntityName), Seq[Int]],
+                operationByUserAction: Map[(Namespace, FullyQualifiedEntityName), ResourceUpdate]): Unit = {
+
+      var addAfterwards: Map[(Namespace, FullyQualifiedEntityName), Int] = Map.empty
+
+      allUserAction.foreach { case function @ (user, action) =>
+        val currentContainers = EdgeBalancerStateSingleton.getContainers(user, action).getOrElse(IndexedSeq.empty)
+
+        val quota = quotaPerFunction(function)
+
+        operationByUserAction(function) match {
+          case Add(cpuTimes) =>
+            val currentCapacity = currentContainers.map(_.cpu.milliCpus).sum
+            if (quota > currentCapacity) {
+              addAfterwards = addAfterwards + (function -> math.min(cpuTimes.map(_.milliCpus).sum, quota - currentCapacity))
+            } else if (quota < currentCapacity) {
+              terminateOrDeflate(function, currentContainers, quota)
+            }
+
+          case Remove(removedContainers) =>
+            val predictedCapacity = predictedCapacityByUserAction.getOrElse(function, Seq.empty).sum
+            if (predictedCapacity > quota) {
+              terminateOrDeflate(function, currentContainers.diff(removedContainers), quota)
+            }
+
+          case Stay =>
+            val predictedCapacity = predictedCapacityByUserAction.getOrElse(function, Seq.empty).sum
+            if (predictedCapacity > quota) {
+              terminateOrDeflate(function, currentContainers, quota)
+            }
+        }
+      }
+
+      while (addAfterwards.nonEmpty) {
+        val (function, remainingQuota) = addAfterwards.maxBy(_._2)
+        val (user, action) = function
+        val standarcCpu = EdgeBalancerStateSingleton.actionStandardCpuMap(action).milliCpus
+        val minCpu = standarcCpu / 2
+        if (remainingQuota < minCpu) {
+          addAfterwards = addAfterwards - function
+        } else {
+          val invokerCapacity = EdgeBalancerStateSingleton.getAvailableSpaces
+          val maxInvokerCapacity = invokerCapacity.values.max
+          if (maxInvokerCapacity.milliCpus < minCpu) {
+            addAfterwards = addAfterwards - function
+          } else {
+            val cpu = CpuTime(maxInvokerCapacity.milliCpus min remainingQuota min standarcCpu)
+            val canditates = invokerCapacity.filter(_._2 >= cpu).keys.toList
+            val invoker = canditates(random.nextInt(canditates.length))
+            createContainer(user ,action, cpu, invoker)
+            addAfterwards = addAfterwards.updated(function, remainingQuota - cpu.milliCpus)
+          }
+        }
+      }
+    }
+
+    def terminateOrDeflate(function: (Namespace, FullyQualifiedEntityName),
+                           containers: Seq[ContainerInfo],
+                           quota: Int,
+                           useDeflation: Boolean = false) = Future {
+      val (user, action) = function
+      if (useDeflation) {
+        val standardCpu = EdgeBalancerStateSingleton.actionStandardCpuMap(action)
+        val minCpu = standardCpu.milliCpus / 2
+        if (quota < minCpu * containers.length) {
+          // some containers need to be terminated
+          val num = quota / minCpu
+
+          val sortedContainers = containers.sortBy(_.cpu)
+
+          sortedContainers.dropRight(num).foreach { container =>
+            val containerRemovalMessage = ContainerOperationMessage(
+              operation = ContainerOperationMessage.ForceTerminate,
+              containerId = container.id
+            )
+            sendControlMessageToInvoker(messageProducer, containerRemovalMessage, container.invoker).map( _ =>
+              deleteContainer(user, action, container.id)
+            )
+          }
+
+          sortedContainers.takeRight(num).foreach { container =>
+            val newCpu = CpuTime(quota / num)
+            val containerResizeMessage = ContainerOperationMessage (
+              operation = ContainerOperationMessage.Resize,
+              containerId = container.id,
+              cpu = Some(newCpu)
+            )
+            sendControlMessageToInvoker(messageProducer, containerResizeMessage, container.invoker).map( _ =>
+              resizeContainer(user, action, container.id, newCpu)
+            )
+          }
+        } else {
+          val usedCapacity = containers.map(_.cpu.milliCpus).sum
+          val deflateObj = usedCapacity - quota
+          val deflatable = usedCapacity - containers.length * minCpu
+          containers.foreach { container =>
+            val newCpu = CpuTime(container.cpu.milliCpus - math.ceil(deflateObj * (container.cpu.milliCpus - minCpu).doubleValue / deflatable).intValue)
+            val containerResizeMesage = ContainerOperationMessage(
+              operation = ContainerOperationMessage.Resize,
+              containerId = container.id,
+              cpu = Some(newCpu)
+            )
+            sendControlMessageToInvoker(messageProducer, containerResizeMesage, container.invoker).map( _ =>
+              resizeContainer(user, action, container.id, newCpu)
+            )
+          }
+        }
+      } else {
+        var totalReleased = 0
+        val obj = containers.map(_.cpu.milliCpus).sum - quota
+        random.shuffle(containers).takeWhile { container =>
+          totalReleased += container.cpu.milliCpus
+          totalReleased < obj
+        }.foreach { container =>
+          val containerRemovalMessage = ContainerOperationMessage(
+            operation = ContainerOperationMessage.ForceTerminate,
+            containerId = container.id
+          )
+          sendControlMessageToInvoker(messageProducer, containerRemovalMessage, container.invoker).map( _ =>
+            deleteContainer(user, action, container.id)
+          )
+        }
+      }
+    }
+
   }
 
   class ServiceRatePredictor(profilingResults: Map[Int, Double]) {
@@ -393,14 +520,9 @@ class EdgeBalancer(
     1000 -> 691.208))
 
   private val primePredictor = new ServiceRatePredictor(Map(
-//    200 -> 658.440,
-//    300 -> 441.998,
-//    400 -> 337.668,
-//    500 -> 266.404,
-//    600 -> 226.204,
-//    700 -> 187.234,
-//    800 -> 161.184,
-    300 -> 168.270000
+    200 -> 259.760,
+    300 -> 177.540,
+    400 -> 117.242
   ))
 
   def getServiceRate(action: FullyQualifiedEntityName, containerCpu: CpuTime): Double = {
@@ -408,7 +530,7 @@ class EdgeBalancer(
       // the mobilenet V3 action
       case name if name.startsWith("mnv3") =>
         mnv3Predictor.predict(containerCpu.milliCpus)
-      case name if name.startsWith("") =>
+      case name if name.startsWith("prime") =>
         primePredictor.predict(containerCpu.milliCpus)
       case name =>
         throw new NotImplementedError(s"Function $name has not been profiled")
@@ -417,6 +539,21 @@ class EdgeBalancer(
 
   private val schedulingPeriod: FiniteDuration = 5.seconds
   actorSystem.scheduler.schedule(schedulingPeriod, schedulingPeriod, updateResources)
+
+  private def createContainer(user: Namespace, action: FullyQualifiedEntityName, cpu: CpuTime, invoker: InvokerInstanceId) = {
+    val containerId = UUID().asString
+    val memory = EdgeBalancerStateSingleton.actionMemoryMap(action)
+    val containerCreationMessage = ContainerOperationMessage(
+      ContainerOperationMessage.Create,
+      containerId,
+      Some(memory),
+      Some(cpu),
+      Some(action)
+    )
+    sendControlMessageToInvoker(messageProducer, containerCreationMessage, invoker).map(_ =>
+      addContainer(user, action, ContainerInfo(containerId, invoker, memory, cpu))
+    )
+  }
 
   override val invokerPool: ActorRef = invokerPoolFactory.createInvokerPool(
     actorSystem,
@@ -505,14 +642,14 @@ class EdgeBalancer(
     }
   }
 
-  def deleteContainer(user: Namespace, action: FullyQualifiedEntityName, containerInfo: ContainerInfo): Future[Unit] = {
+  def deleteContainer(user: Namespace, action: FullyQualifiedEntityName, containerId: String): Future[Unit] = {
     Future {
       var updated = false
       while (!updated) {
         EdgeBalancerStateSingleton.getContainers(user, action) match {
           case Some(oldContainers) =>
-            updated = if (oldContainers contains containerInfo) {
-              EdgeBalancerStateSingleton.compareAndSetContainers(user, action, oldContainers, oldContainers.filter(_ != containerInfo))
+            updated = if (oldContainers.exists(_.id == containerId)) {
+              EdgeBalancerStateSingleton.compareAndSetContainers(user, action, oldContainers, oldContainers.filter(_.id != containerId))
             } else {
               true // already deleted
             }
@@ -521,7 +658,22 @@ class EdgeBalancer(
             updated = true
         }
       }
-      logging.info(this, s"Removed container with ${containerInfo.memory} memory and ${containerInfo.cpu} cpu for action $user/$action")
+      logging.info(this, s"Removed container for action $user/$action")
+    }
+  }
+
+  def resizeContainer(user: Namespace, action: FullyQualifiedEntityName, containerId: String, cpu: CpuTime): Future[Unit] = {
+    Future {
+      var updated = false
+      while (!updated) {
+        val oldContainers = EdgeBalancerStateSingleton.getContainers(user, action).get
+        val updatedCntainers = oldContainers.map { containerInfo =>
+          if (containerInfo.id == containerId) containerInfo.copy(cpu = cpu)
+          else containerInfo
+        }
+        updated = EdgeBalancerStateSingleton.compareAndSetContainers(user, action, oldContainers, updatedCntainers)
+      }
+      logging.info(this, s"Resized container $containerId for action $user/$action to $cpu")
     }
   }
 
