@@ -9,7 +9,6 @@ import org.apache.openwhisk.core.entity.size._
 import org.junit.runner.RunWith
 import org.scalatest.BeforeAndAfterAll
 import org.scalatestplus.junit.JUnitRunner
-import spray.json.JsNumber
 import spray.json._
 
 
@@ -32,7 +31,7 @@ class SizeEffectTests extends TestHelpers with WskTestHelpers with WskActorSyste
   it should "create an action with default weight" in withAssetCleaner(user) { (wp, assetHelper) =>
     val cpu = CpuTime(milliCpus = 300)
     val memory = 256.MB
-    val name = s"prime-${cpu.milliCpus}"
+    val name = s"prime3000-${cpu.milliCpus}"
 
     val creationResult = assetHelper.withCleaner(wskOperations.action, name) { (action, _) =>
       // action.create(name, None, docker = Some("binw/mnv3-action"), cpu = Some(cpu), memory = Some(memory))
@@ -41,7 +40,7 @@ class SizeEffectTests extends TestHelpers with WskTestHelpers with WskActorSyste
 
     val times = 500
     val activationIds = 1 to times map { _ =>
-      val runResult = wskOperations.action.invoke(name, parameters = Map("n" -> JsNumber(3000)))
+      val runResult = wskOperations.action.invoke(name)
       // Thread.sleep(1000)
       wskOperations.activation.extractActivationId(runResult)
     }

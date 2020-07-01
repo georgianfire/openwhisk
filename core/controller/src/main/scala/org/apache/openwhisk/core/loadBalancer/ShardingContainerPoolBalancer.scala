@@ -464,8 +464,8 @@ case class ShardingContainerPoolBalancerState(
   // means, that there is no differentiation between managed and blackbox invokers.
   // If the sum is below 1.0 with the initial values from config, the blackbox fraction will be set higher than
   // specified in config and adapted to the managed fraction.
-  private val managedFraction: Double = Math.max(0.0, Math.min(1.0, lbConfig.managedFraction))
-  private val blackboxFraction: Double = Math.max(1.0 - managedFraction, Math.min(1.0, lbConfig.blackboxFraction))
+  private val managedFraction: Double = 1.0
+  private val blackboxFraction: Double = 1.0
   logging.info(this, s"managedFraction = $managedFraction, blackboxFraction = $blackboxFraction")(
     TransactionId.loadbalancer)
 
